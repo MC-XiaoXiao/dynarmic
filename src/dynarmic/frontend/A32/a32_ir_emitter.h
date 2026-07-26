@@ -95,6 +95,8 @@ public:
     void WriteMemory16(const IR::U32& vaddr, const IR::U16& value, IR::AccType acc_type);
     void WriteMemory32(const IR::U32& vaddr, const IR::U32& value, IR::AccType acc_type);
     void WriteMemory64(const IR::U32& vaddr, const IR::U64& value, IR::AccType acc_type);
+    IR::U8 SwapMemory8(const IR::U32& vaddr, const IR::U8& value);
+    IR::U32 SwapMemory32(const IR::U32& vaddr, const IR::U32& value);
     IR::U32 ExclusiveWriteMemory8(const IR::U32& vaddr, const IR::U8& value, IR::AccType acc_type);
     IR::U32 ExclusiveWriteMemory16(const IR::U32& vaddr, const IR::U16& value, IR::AccType acc_type);
     IR::U32 ExclusiveWriteMemory32(const IR::U32& vaddr, const IR::U32& value, IR::AccType acc_type);

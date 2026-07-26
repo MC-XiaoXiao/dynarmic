@@ -557,6 +557,10 @@ EmitConfig A64AddressSpace::GetEmitConfig() {
         .check_halt_on_memory_access = conf.check_halt_on_memory_access,
 
         .page_table_pointer = mcl::bit_cast<u64>(conf.page_table),
+        .read_page_table_pointer = mcl::bit_cast<u64>(
+            conf.read_page_table != nullptr
+                ? conf.read_page_table
+                : conf.page_table),
         .page_table_address_space_bits = conf.page_table_address_space_bits,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
         .silently_mirror_page_table = conf.silently_mirror_page_table,

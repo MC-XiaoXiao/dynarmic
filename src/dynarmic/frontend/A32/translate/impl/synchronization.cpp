@@ -24,9 +24,7 @@ bool TranslatorVisitor::arm_SWP(Cond cond, Reg n, Reg t, Reg t2) {
         return true;
     }
 
-    // TODO (HACK): Implement bus locking here
-    const auto data = ir.ReadMemory32(ir.GetRegister(n), IR::AccType::SWAP);
-    ir.WriteMemory32(ir.GetRegister(n), ir.GetRegister(t2), IR::AccType::SWAP);
+    const auto data = ir.SwapMemory32(ir.GetRegister(n), ir.GetRegister(t2));
     // TODO: Alignment check
     ir.SetRegister(t, data);
     return true;
@@ -43,9 +41,7 @@ bool TranslatorVisitor::arm_SWPB(Cond cond, Reg n, Reg t, Reg t2) {
         return true;
     }
 
-    // TODO (HACK): Implement bus locking here
-    const auto data = ir.ReadMemory8(ir.GetRegister(n), IR::AccType::SWAP);
-    ir.WriteMemory8(ir.GetRegister(n), ir.LeastSignificantByte(ir.GetRegister(t2)), IR::AccType::SWAP);
+    const auto data = ir.SwapMemory8(ir.GetRegister(n), ir.LeastSignificantByte(ir.GetRegister(t2)));
     // TODO: Alignment check
     ir.SetRegister(t, ir.ZeroExtendByteToWord(data));
     return true;

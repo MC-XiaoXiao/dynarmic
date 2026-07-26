@@ -167,6 +167,23 @@ void A32EmitX64::EmitA32WriteMemory64(A32EmitContext& ctx, IR::Inst* inst) {
     EmitMemoryWrite<64, &A32::UserCallbacks::MemoryWrite64>(ctx, inst);
 }
 
+template<std::size_t bitsize, auto callback>
+void A32EmitX64::EmitMemorySwap(A32EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    ctx.reg_alloc.HostCall(inst, {}, args[1], args[2]);
+    Devirtualize<callback>(conf.callbacks).EmitCall(code);
+    code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
+    EmitCheckMemoryAbort(ctx, inst);
+}
+
+void A32EmitX64::EmitA32SwapMemory8(A32EmitContext& ctx, IR::Inst* inst) {
+    EmitMemorySwap<8, &A32::UserCallbacks::MemorySwap8>(ctx, inst);
+}
+
+void A32EmitX64::EmitA32SwapMemory32(A32EmitContext& ctx, IR::Inst* inst) {
+    EmitMemorySwap<32, &A32::UserCallbacks::MemorySwap32>(ctx, inst);
+}
+
 void A32EmitX64::EmitA32ClearExclusive(A32EmitContext&, IR::Inst*) {
     code.mov(code.byte[r15 + offsetof(A32JitState, exclusive_state)], u8(0));
 }

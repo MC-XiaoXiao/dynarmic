@@ -92,6 +92,9 @@ public:
     /// Debugging: Dump a disassembly all compiled code to the console.
     void DumpDisassembly() const;
 
+    /// Returns the number of bytes currently occupied in the code cache.
+    std::size_t CodeCacheUsed() const;
+
     /**
      * Disassemble the instructions following the current pc and return
      * the resulting instructions as a vector of their string representations.

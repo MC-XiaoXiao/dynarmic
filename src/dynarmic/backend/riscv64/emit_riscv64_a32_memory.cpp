@@ -83,6 +83,16 @@ void EmitIR<IR::Opcode::A32WriteMemory64>(biscuit::Assembler&, EmitContext&, IR:
 }
 
 template<>
+void EmitIR<IR::Opcode::A32SwapMemory8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32SwapMemory32>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
 void EmitIR<IR::Opcode::A32ExclusiveWriteMemory8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
     UNIMPLEMENTED();
 }

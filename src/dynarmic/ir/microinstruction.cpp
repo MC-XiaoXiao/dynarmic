@@ -65,6 +65,8 @@ bool Inst::IsSharedMemoryRead() const {
     case Opcode::A32ReadMemory16:
     case Opcode::A32ReadMemory32:
     case Opcode::A32ReadMemory64:
+    case Opcode::A32SwapMemory8:
+    case Opcode::A32SwapMemory32:
     case Opcode::A64ReadMemory8:
     case Opcode::A64ReadMemory16:
     case Opcode::A64ReadMemory32:
@@ -83,6 +85,8 @@ bool Inst::IsSharedMemoryWrite() const {
     case Opcode::A32WriteMemory16:
     case Opcode::A32WriteMemory32:
     case Opcode::A32WriteMemory64:
+    case Opcode::A32SwapMemory8:
+    case Opcode::A32SwapMemory32:
     case Opcode::A64WriteMemory8:
     case Opcode::A64WriteMemory16:
     case Opcode::A64WriteMemory32:

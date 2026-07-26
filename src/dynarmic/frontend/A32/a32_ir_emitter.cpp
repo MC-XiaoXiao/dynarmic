@@ -329,6 +329,16 @@ void IREmitter::WriteMemory64(const IR::U32& vaddr, const IR::U64& value, IR::Ac
     }
 }
 
+IR::U8 IREmitter::SwapMemory8(const IR::U32& vaddr, const IR::U8& value) {
+    return Inst<IR::U8>(Opcode::A32SwapMemory8, ImmCurrentLocationDescriptor(), vaddr, value);
+}
+
+IR::U32 IREmitter::SwapMemory32(const IR::U32& vaddr, const IR::U32& value) {
+    const auto stored = current_location.EFlag() ? ByteReverseWord(value) : value;
+    const auto previous = Inst<IR::U32>(Opcode::A32SwapMemory32, ImmCurrentLocationDescriptor(), vaddr, stored);
+    return current_location.EFlag() ? ByteReverseWord(previous) : previous;
+}
+
 IR::U32 IREmitter::ExclusiveWriteMemory8(const IR::U32& vaddr, const IR::U8& value, IR::AccType acc_type) {
     return Inst<IR::U32>(Opcode::A32ExclusiveWriteMemory8, ImmCurrentLocationDescriptor(), vaddr, value, IR::Value{acc_type});
 }

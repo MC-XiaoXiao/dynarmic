@@ -120,6 +120,10 @@ struct Jit::Impl final {
         UNIMPLEMENTED();
     }
 
+    size_t CodeCacheUsed() const {
+        return current_address_space.GetCodeCacheUsed();
+    }
+
 private:
     void RequestCacheInvalidation() {
         // ASSERT_FALSE("Unimplemented");
@@ -212,6 +216,10 @@ void Jit::ClearExclusiveState() {
 
 void Jit::DumpDisassembly() const {
     impl->DumpDisassembly();
+}
+
+std::size_t Jit::CodeCacheUsed() const {
+    return impl->CodeCacheUsed();
 }
 
 }  // namespace Dynarmic::A32

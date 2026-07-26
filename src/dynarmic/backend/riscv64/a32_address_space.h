@@ -31,6 +31,8 @@ public:
 
     void ClearCache();
 
+    size_t GetCodeCacheUsed() const;
+
 private:
     friend class A32Core;
 

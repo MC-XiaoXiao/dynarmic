@@ -88,6 +88,11 @@ struct UserCallbacks : public TranslateCallbacks {
     virtual void MemoryWrite32(VAddr vaddr, std::uint32_t value) = 0;
     virtual void MemoryWrite64(VAddr vaddr, std::uint64_t value) = 0;
 
+    // Atomically replaces the addressed value and returns its previous value.
+    // SWP/SWPB require the read and write to be one indivisible bus operation.
+    virtual std::uint8_t MemorySwap8(VAddr vaddr, std::uint8_t value) = 0;
+    virtual std::uint32_t MemorySwap32(VAddr vaddr, std::uint32_t value) = 0;
+
     // Writes through these callbacks may not be aligned.
     virtual bool MemoryWriteExclusive8(VAddr /*vaddr*/, std::uint8_t /*value*/, std::uint8_t /*expected*/) { return false; }
     virtual bool MemoryWriteExclusive16(VAddr /*vaddr*/, std::uint16_t /*value*/, std::uint16_t /*expected*/) { return false; }
@@ -156,6 +161,10 @@ struct UserConfig {
     static constexpr std::size_t PAGE_BITS = 12;
     static constexpr std::size_t NUM_PAGE_TABLE_ENTRIES = 1 << (32 - PAGE_BITS);
     std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* page_table = nullptr;
+    /// Optional read-only page table. Memory reads use this table when set,
+    /// while writes continue to use page_table. This lets immutable/COW pages
+    /// take the direct read path without bypassing write callbacks.
+    std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* read_page_table = nullptr;
     /// Determines if the pointer in the page_table shall be offseted locally or globally.
     /// 'false' will access page_table[addr >> bits][addr & mask]
     /// 'true'  will access page_table[addr >> bits][addr]

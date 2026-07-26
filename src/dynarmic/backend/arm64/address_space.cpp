@@ -103,6 +103,10 @@ void AddressSpace::DumpDisassembly() const {
     }
 }
 
+size_t AddressSpace::GetCodeCacheUsed() const {
+    return static_cast<size_t>(code.offset());
+}
+
 size_t AddressSpace::GetRemainingSize() {
     return code_cache_size - static_cast<size_t>(code.offset());
 }
@@ -205,6 +209,12 @@ void AddressSpace::Link(EmittedBlockInfo& block_info) {
             break;
         case LinkTarget::WriteMemory128:
             c.BL(prelude_info.write_memory_128);
+            break;
+        case LinkTarget::SwapMemory8:
+            c.BL(prelude_info.swap_memory_8);
+            break;
+        case LinkTarget::SwapMemory32:
+            c.BL(prelude_info.swap_memory_32);
             break;
         case LinkTarget::WrappedWriteMemory8:
             c.BL(prelude_info.wrapped_write_memory_8);

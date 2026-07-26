@@ -730,6 +730,8 @@ A32OPC(WriteMemory8,                                        Void,           U64,
 A32OPC(WriteMemory16,                                       Void,           U64,            U32,            U16,            AccType         )
 A32OPC(WriteMemory32,                                       Void,           U64,            U32,            U32,            AccType         )
 A32OPC(WriteMemory64,                                       Void,           U64,            U32,            U64,            AccType         )
+A32OPC(SwapMemory8,                                         U8,             U64,            U32,            U8                              )
+A32OPC(SwapMemory32,                                        U32,            U64,            U32,            U32                             )
 A32OPC(ExclusiveWriteMemory8,                               U32,            U64,            U32,            U8,             AccType         )
 A32OPC(ExclusiveWriteMemory16,                              U32,            U64,            U32,            U16,            AccType         )
 A32OPC(ExclusiveWriteMemory32,                              U32,            U64,            U32,            U32,            AccType         )

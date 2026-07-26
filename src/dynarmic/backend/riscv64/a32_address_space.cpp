@@ -111,6 +111,11 @@ size_t A32AddressSpace::GetRemainingSize() {
     return conf.code_cache_size - (GetCursorPtr<sptr>() - GetMemPtr<sptr>());
 }
 
+size_t A32AddressSpace::GetCodeCacheUsed() const {
+    return static_cast<size_t>(
+        GetCursorPtr<sptr>() - GetMemPtr<sptr>());
+}
+
 EmittedBlockInfo A32AddressSpace::Emit(IR::Block block) {
     if (GetRemainingSize() < 1024 * 1024) {
         ClearCache();

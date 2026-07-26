@@ -45,6 +45,8 @@ public:
 
     void DumpDisassembly() const;
 
+    size_t GetCodeCacheUsed() const;
+
 protected:
     virtual EmitConfig GetEmitConfig() = 0;
     virtual void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) = 0;
@@ -112,6 +114,8 @@ protected:
         void* write_memory_32;
         void* write_memory_64;
         void* write_memory_128;
+        void* swap_memory_8;
+        void* swap_memory_32;
         void* wrapped_write_memory_8;
         void* wrapped_write_memory_16;
         void* wrapped_write_memory_32;

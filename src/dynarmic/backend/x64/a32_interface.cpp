@@ -178,6 +178,11 @@ struct Jit::Impl {
         Common::DumpDisassembledX64(block_of_code.GetCodeBegin(), size);
     }
 
+    size_t CodeCacheUsed() const {
+        return reinterpret_cast<const char*>(block_of_code.getCurr()) -
+               reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
+    }
+
     std::vector<std::string> Disassemble() const {
         const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
         return Common::DisassembleX64(block_of_code.GetCodeBegin(), size);
@@ -338,6 +343,10 @@ void Jit::ClearExclusiveState() {
 
 void Jit::DumpDisassembly() const {
     impl->DumpDisassembly();
+}
+
+std::size_t Jit::CodeCacheUsed() const {
+    return impl->CodeCacheUsed();
 }
 
 }  // namespace Dynarmic::A32

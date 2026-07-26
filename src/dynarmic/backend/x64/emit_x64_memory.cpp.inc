@@ -56,8 +56,11 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool ordered = IsOrdered(args[2].GetImmediateAccType());
     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+    const auto* read_page_table = conf.read_page_table != nullptr
+                                    ? conf.read_page_table
+                                    : conf.page_table;
 
-    if (!conf.page_table && !fastmem_marker) {
+    if (!read_page_table && !fastmem_marker) {
         // Neither fastmem nor page table: Use callbacks
         if constexpr (bitsize == 128) {
             ctx.reg_alloc.HostCall(nullptr, {}, args[1]);
@@ -118,8 +121,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
         });
     } else {
         // Use page table
-        ASSERT(conf.page_table);
-        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        ASSERT(read_page_table);
+        const auto src_ptr = EmitVAddrLookup(
+            code, ctx, bitsize, *abort, vaddr, read_page_table);
         EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {
@@ -206,7 +210,8 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
     } else {
         // Use page table
         ASSERT(conf.page_table);
-        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        const auto dest_ptr = EmitVAddrLookup(
+            code, ctx, bitsize, *abort, vaddr, conf.page_table);
         EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {

@@ -116,6 +116,8 @@ protected:
     template<std::size_t bitsize, auto callback>
     void EmitMemoryWrite(A32EmitContext& ctx, IR::Inst* inst);
     template<std::size_t bitsize, auto callback>
+    void EmitMemorySwap(A32EmitContext& ctx, IR::Inst* inst);
+    template<std::size_t bitsize, auto callback>
     void EmitExclusiveReadMemory(A32EmitContext& ctx, IR::Inst* inst);
     template<std::size_t bitsize, auto callback>
     void EmitExclusiveWriteMemory(A32EmitContext& ctx, IR::Inst* inst);
