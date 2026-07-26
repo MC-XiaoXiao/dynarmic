@@ -16,7 +16,9 @@ bool TranslatorVisitor::arm_CLREX() {
 // SWP<c> <Rt>, <Rt2>, [<Rn>]
 // TODO: UNDEFINED if current mode is Hypervisor
 bool TranslatorVisitor::arm_SWP(Cond cond, Reg n, Reg t, Reg t2) {
-    if (t == Reg::PC || t2 == Reg::PC || n == Reg::PC || n == t || n == t2) {
+    // ARMv6 reads the base before writing the destination when they overlap.
+    const bool unsupported_destination_base_overlap = n == t && ir.ArchVersion() != 6;
+    if (t == Reg::PC || t2 == Reg::PC || n == Reg::PC || n == t2 || unsupported_destination_base_overlap) {
         return UnpredictableInstruction();
     }
 
@@ -33,7 +35,9 @@ bool TranslatorVisitor::arm_SWP(Cond cond, Reg n, Reg t, Reg t2) {
 // SWPB<c> <Rt>, <Rt2>, [<Rn>]
 // TODO: UNDEFINED if current mode is Hypervisor
 bool TranslatorVisitor::arm_SWPB(Cond cond, Reg n, Reg t, Reg t2) {
-    if (t == Reg::PC || t2 == Reg::PC || n == Reg::PC || n == t || n == t2) {
+    // ARMv6 reads the base before writing the destination when they overlap.
+    const bool unsupported_destination_base_overlap = n == t && ir.ArchVersion() != 6;
+    if (t == Reg::PC || t2 == Reg::PC || n == Reg::PC || n == t2 || unsupported_destination_base_overlap) {
         return UnpredictableInstruction();
     }
 
