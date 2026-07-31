@@ -253,10 +253,11 @@ bool Argument::IsInMemory() const {
     return HostLocIsSpill(*reg_alloc.ValueLocation(value.GetInst()));
 }
 
-RegAlloc::RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order)
+RegAlloc::RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order, size_t instruction_count)
         : gpr_order(gpr_order)
         , xmm_order(xmm_order)
         , hostloc_info(NonSpillHostLocCount + SpillCount)
+        , value_locations(instruction_count)
         , code(code) {}
 
 RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
@@ -412,6 +413,7 @@ HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>
         } else {
             LocInfo(current_location).SetLastUse();
         }
+        MarkActive(current_location);
         LocInfo(current_location).WriteLock();
         return current_location;
     }
@@ -419,6 +421,7 @@ HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>
     const HostLoc destination_location = SelectARegister(desired_locations);
     MoveOutOfTheWay(destination_location);
     CopyToScratch(bit_width, destination_location, current_location);
+    MarkActive(destination_location);
     LocInfo(destination_location).WriteLock();
     return destination_location;
 }
@@ -426,6 +429,7 @@ HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>
 HostLoc RegAlloc::ScratchImpl(const std::vector<HostLoc>& desired_locations) {
     const HostLoc location = SelectARegister(desired_locations);
     MoveOutOfTheWay(location);
+    MarkActive(location);
     LocInfo(location).WriteLock();
     return location;
 }
@@ -504,13 +508,22 @@ void RegAlloc::ReleaseStackSpace(size_t stack_space) {
 }
 
 void RegAlloc::EndOfAllocScope() {
-    for (auto& iter : hostloc_info) {
-        iter.ReleaseAll();
+    size_t retained_count = 0;
+    for (size_t i = 0; i < active_location_count; i++) {
+        const HostLoc loc = active_locations[i];
+        auto& info = LocInfo(loc);
+        info.ReleaseAll();
+        if (info.IsEmpty()) {
+            active_location_flags[static_cast<size_t>(loc)] = false;
+        } else {
+            active_locations[retained_count++] = loc;
+        }
     }
+    active_location_count = retained_count;
 }
 
 void RegAlloc::AssertNoMoreUses() {
-    ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) { return i.IsEmpty(); }));
+    ASSERT(active_location_count == 0);
 }
 
 void RegAlloc::EmitVerboseDebuggingOutput() {
@@ -520,19 +533,21 @@ void RegAlloc::EmitVerboseDebuggingOutput() {
 }
 
 HostLoc RegAlloc::SelectARegister(const std::vector<HostLoc>& desired_locations) const {
-    std::vector<HostLoc> candidates = desired_locations;
+    ASSERT(desired_locations.size() <= NonSpillHostLocCount);
+    std::array<HostLoc, NonSpillHostLocCount> candidates;
+    const auto candidates_end = std::copy(
+            desired_locations.begin(), desired_locations.end(), candidates.begin());
 
     // Find all locations that have not been allocated..
-    const auto allocated_locs = std::partition(candidates.begin(), candidates.end(), [this](auto loc) {
+    const auto allocated_locs = std::partition(candidates.begin(), candidates_end, [this](auto loc) {
         return !this->LocInfo(loc).IsLocked();
     });
-    candidates.erase(allocated_locs, candidates.end());
-    ASSERT_MSG(!candidates.empty(), "All candidate registers have already been allocated");
+    ASSERT_MSG(candidates.begin() != allocated_locs, "All candidate registers have already been allocated");
 
     // Selects the best location out of the available locations.
     // TODO: Actually do LRU or something. Currently we just try to pick something without a value if possible.
 
-    std::partition(candidates.begin(), candidates.end(), [this](auto loc) {
+    std::partition(candidates.begin(), allocated_locs, [this](auto loc) {
         return this->LocInfo(loc).IsEmpty();
     });
 
@@ -540,18 +555,20 @@ HostLoc RegAlloc::SelectARegister(const std::vector<HostLoc>& desired_locations)
 }
 
 std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
-    for (size_t i = 0; i < hostloc_info.size(); i++) {
-        if (hostloc_info[i].ContainsValue(value)) {
-            return static_cast<HostLoc>(i);
-        }
+    const size_t name = value->GetName();
+    if (name >= value_locations.size()) {
+        return std::nullopt;
     }
-
-    return std::nullopt;
+    const auto loc = value_locations[name];
+    return loc && LocInfo(*loc).ContainsValue(value) ? loc : std::nullopt;
 }
 
 void RegAlloc::DefineValueImpl(IR::Inst* def_inst, HostLoc host_loc) {
     ASSERT_MSG(!ValueLocation(def_inst), "def_inst has already been defined");
+    ASSERT(def_inst->GetName() < value_locations.size());
     LocInfo(host_loc).AddValue(def_inst);
+    value_locations[def_inst->GetName()] = host_loc;
+    MarkActive(host_loc);
 }
 
 void RegAlloc::DefineValueImpl(IR::Inst* def_inst, const IR::Value& use_inst) {
@@ -610,6 +627,10 @@ void RegAlloc::Move(HostLoc to, HostLoc from) {
     EmitMove(bit_width, to, from);
 
     LocInfo(to) = std::exchange(LocInfo(from), {});
+    for (IR::Inst* value : LocInfo(to).values) {
+        value_locations[value->GetName()] = to;
+    }
+    MarkActive(to);
 }
 
 void RegAlloc::CopyToScratch(size_t bit_width, HostLoc to, HostLoc from) {
@@ -636,6 +657,14 @@ void RegAlloc::Exchange(HostLoc a, HostLoc b) {
     EmitExchange(a, b);
 
     std::swap(LocInfo(a), LocInfo(b));
+    for (IR::Inst* value : LocInfo(a).values) {
+        value_locations[value->GetName()] = a;
+    }
+    for (IR::Inst* value : LocInfo(b).values) {
+        value_locations[value->GetName()] = b;
+    }
+    MarkActive(a);
+    MarkActive(b);
 }
 
 void RegAlloc::MoveOutOfTheWay(HostLoc reg) {
@@ -663,6 +692,16 @@ HostLoc RegAlloc::FindFreeSpill() const {
     }
 
     ASSERT_FALSE("All spill locations are full");
+}
+
+void RegAlloc::MarkActive(HostLoc loc) {
+    const size_t index = static_cast<size_t>(loc);
+    if (active_location_flags[index]) {
+        return;
+    }
+    ASSERT(active_location_count < active_locations.size());
+    active_location_flags[index] = true;
+    active_locations[active_location_count++] = loc;
 }
 
 HostLocInfo& RegAlloc::LocInfo(HostLoc loc) {

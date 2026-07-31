@@ -17,6 +17,7 @@
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/hostloc.h"
 #include "dynarmic/backend/x64/oparg.h"
+#include "dynarmic/backend/x64/stack_layout.h"
 #include "dynarmic/ir/cond.h"
 #include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/value.h"
@@ -51,6 +52,8 @@ public:
     void EmitVerboseDebuggingOutput(BlockOfCode& code, size_t host_loc_index) const;
 
 private:
+    friend class RegAlloc;
+
     // Current instruction state
     size_t is_being_used_count = 0;
     bool is_scratch = false;
@@ -107,7 +110,7 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order);
+    explicit RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order, size_t instruction_count);
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     void RegisterPseudoOperation(IR::Inst* inst);
@@ -172,8 +175,14 @@ private:
 
     void SpillRegister(HostLoc loc);
     HostLoc FindFreeSpill() const;
+    void MarkActive(HostLoc loc);
 
+    static constexpr size_t hostloc_count = NonSpillHostLocCount + SpillCount;
     std::vector<HostLocInfo> hostloc_info;
+    std::vector<std::optional<HostLoc>> value_locations;
+    std::array<HostLoc, hostloc_count> active_locations{};
+    std::array<bool, hostloc_count> active_location_flags{};
+    size_t active_location_count = 0;
     HostLocInfo& LocInfo(HostLoc loc);
     const HostLocInfo& LocInfo(HostLoc loc) const;
 

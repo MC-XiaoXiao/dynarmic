@@ -6,6 +6,7 @@
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 
 #include <algorithm>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -114,7 +115,11 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
         return gprs;
     }();
 
-    RegAlloc reg_alloc{code, gpr_order, any_xmm};
+    const size_t instruction_count = std::accumulate(
+        block.begin(), block.end(), size_t{1}, [](size_t count, const IR::Inst& inst) {
+            return std::max(count, static_cast<size_t>(inst.GetName()) + 1);
+        });
+    RegAlloc reg_alloc{code, gpr_order, any_xmm, instruction_count};
     A32EmitContext ctx{conf, reg_alloc, block};
 
     // Start emitting.
