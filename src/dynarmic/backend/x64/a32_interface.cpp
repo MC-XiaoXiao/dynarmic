@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -116,6 +117,13 @@ struct Jit::Impl {
         return hr;
     }
 
+    void Precompile(u64 location_descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        static_cast<void>(GetBasicBlock(
+                IR::LocationDescriptor{location_descriptor}));
+    }
+
     void ClearCache() {
         std::unique_lock lock{invalidation_mutex};
         invalidate_entire_cache = true;
@@ -215,6 +223,8 @@ private:
         if (block)
             return *block;
 
+        const auto translation_started = std::chrono::steady_clock::now();
+
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             invalidate_entire_cache = true;
@@ -236,7 +246,14 @@ private:
         }
         Optimization::IdentityRemovalPass(ir_block);
         Optimization::VerificationPass(ir_block);
-        return emitter.Emit(ir_block);
+        auto emitted = emitter.Emit(ir_block);
+        const auto translation_nanoseconds = static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - translation_started)
+                        .count());
+        conf.callbacks->CodeTranslationCompleted(
+                descriptor.Value(), translation_nanoseconds);
+        return emitted;
     }
 
     void PerformRequestedCacheInvalidation(HaltReason hr) {
@@ -287,6 +304,10 @@ HaltReason Jit::Run() {
 
 HaltReason Jit::Step() {
     return impl->Step();
+}
+
+void Jit::Precompile(std::uint64_t location_descriptor) {
+    impl->Precompile(location_descriptor);
 }
 
 void Jit::ClearCache() {

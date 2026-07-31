@@ -35,6 +35,12 @@ public:
     HaltReason Step();
 
     /**
+     * Compiles a previously observed A32 location descriptor without
+     * executing it. The caller must guarantee that execution is stopped.
+     */
+    void Precompile(std::uint64_t location_descriptor);
+
+    /**
      * Clears the code cache of all compiled code.
      * Can be called at any time. Halts execution if called within a callback.
      */

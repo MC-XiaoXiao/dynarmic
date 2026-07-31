@@ -75,6 +75,11 @@ struct UserCallbacks : public TranslateCallbacks {
     // IR code can be emitted by the callee prior to translation of the instruction.
     void PreCodeTranslationHook(bool /*is_thumb*/, VAddr /*pc*/, A32::IREmitter& /*ir*/) override {}
 
+    // Called only after the backend has emitted host code for the block.
+    virtual void CodeTranslationCompleted(
+            std::uint64_t /*location_descriptor*/,
+            std::uint64_t /*translation_nanoseconds*/) noexcept {}
+
     // Reads through these callbacks may not be aligned.
     // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
     virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;
