@@ -65,6 +65,14 @@ static IR::U32 GetAddress(A32::IREmitter& ir, bool P, bool U, bool W, Reg n, IR:
     return address;
 }
 
+static bool HasUnsupportedWritebackOverlap(A32::IREmitter& ir, bool P, bool W, Reg n, Reg t) {
+    return (!P || W) && n == t && ir.ArchVersion() != 6;
+}
+
+static bool HasUnsupportedWritebackOverlap(A32::IREmitter& ir, bool P, bool W, Reg n, Reg t, Reg t2) {
+    return (!P || W) && (n == t || n == t2) && ir.ArchVersion() != 6;
+}
+
 // LDR <Rt>, [PC, #+/-<imm>]
 bool TranslatorVisitor::arm_LDR_lit(Cond cond, bool U, Reg t, Imm<12> imm12) {
     if (!ArmConditionPassed(cond)) {
@@ -94,7 +102,7 @@ bool TranslatorVisitor::arm_LDR_imm(Cond cond, bool P, bool U, bool W, Reg n, Re
     }
 
     ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
-    if ((!P || W) && n == t) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t)) {
         return UnpredictableInstruction();
     }
 
@@ -131,7 +139,7 @@ bool TranslatorVisitor::arm_LDR_reg(Cond cond, bool P, bool U, bool W, Reg n, Re
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -181,7 +189,7 @@ bool TranslatorVisitor::arm_LDRB_imm(Cond cond, bool P, bool U, bool W, Reg n, R
     }
 
     ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
-    if ((!P || W) && n == t) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t)) {
         return UnpredictableInstruction();
     }
 
@@ -210,7 +218,7 @@ bool TranslatorVisitor::arm_LDRB_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -275,7 +283,7 @@ bool TranslatorVisitor::arm_LDRD_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == t || n == t + 1)) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t, t + 1)) {
         return UnpredictableInstruction();
     }
 
@@ -321,7 +329,7 @@ bool TranslatorVisitor::arm_LDRD_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t || n == t + 1)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t, t + 1))) {
         return UnpredictableInstruction();
     }
 
@@ -379,7 +387,7 @@ bool TranslatorVisitor::arm_LDRH_imm(Cond cond, bool P, bool U, bool W, Reg n, R
     }
 
     ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
-    if ((!P || W) && n == t) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t)) {
         return UnpredictableInstruction();
     }
 
@@ -408,7 +416,7 @@ bool TranslatorVisitor::arm_LDRH_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -453,7 +461,7 @@ bool TranslatorVisitor::arm_LDRSB_imm(Cond cond, bool P, bool U, bool W, Reg n, 
     }
 
     ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
-    if ((!P || W) && n == t) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t)) {
         return UnpredictableInstruction();
     }
 
@@ -482,7 +490,7 @@ bool TranslatorVisitor::arm_LDRSB_reg(Cond cond, bool P, bool U, bool W, Reg n, 
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -526,7 +534,7 @@ bool TranslatorVisitor::arm_LDRSH_imm(Cond cond, bool P, bool U, bool W, Reg n, 
     }
 
     ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
-    if ((!P || W) && n == t) {
+    if (HasUnsupportedWritebackOverlap(ir, P, W, n, t)) {
         return UnpredictableInstruction();
     }
 
@@ -555,7 +563,7 @@ bool TranslatorVisitor::arm_LDRSH_reg(Cond cond, bool P, bool U, bool W, Reg n, 
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -574,7 +582,7 @@ bool TranslatorVisitor::arm_LDRSH_reg(Cond cond, bool P, bool U, bool W, Reg n, 
 // STR <Rt>, [<Rn>, #+/-<imm>]{!}
 // STR <Rt>, [<Rn>], #+/-<imm>
 bool TranslatorVisitor::arm_STR_imm(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Imm<12> imm12) {
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -582,9 +590,10 @@ bool TranslatorVisitor::arm_STR_imm(Cond cond, bool P, bool U, bool W, Reg n, Re
         return true;
     }
 
+    const auto value = ir.GetRegister(t);
     const auto offset = ir.Imm32(imm12.ZeroExtend());
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory32(address, ir.GetRegister(t), IR::AccType::NORMAL);
+    ir.WriteMemory32(address, value, IR::AccType::NORMAL);
     return true;
 }
 
@@ -595,7 +604,7 @@ bool TranslatorVisitor::arm_STR_reg(Cond cond, bool P, bool U, bool W, Reg n, Re
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -603,9 +612,10 @@ bool TranslatorVisitor::arm_STR_reg(Cond cond, bool P, bool U, bool W, Reg n, Re
         return true;
     }
 
+    const auto value = ir.GetRegister(t);
     const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory32(address, ir.GetRegister(t), IR::AccType::NORMAL);
+    ir.WriteMemory32(address, value, IR::AccType::NORMAL);
     return true;
 }
 
@@ -616,7 +626,7 @@ bool TranslatorVisitor::arm_STRB_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -624,9 +634,10 @@ bool TranslatorVisitor::arm_STRB_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
+    const auto value = ir.LeastSignificantByte(ir.GetRegister(t));
     const auto offset = ir.Imm32(imm12.ZeroExtend());
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory8(address, ir.LeastSignificantByte(ir.GetRegister(t)), IR::AccType::NORMAL);
+    ir.WriteMemory8(address, value, IR::AccType::NORMAL);
     return true;
 }
 
@@ -637,7 +648,7 @@ bool TranslatorVisitor::arm_STRB_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -645,9 +656,10 @@ bool TranslatorVisitor::arm_STRB_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
+    const auto value = ir.LeastSignificantByte(ir.GetRegister(t));
     const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory8(address, ir.LeastSignificantByte(ir.GetRegister(t)), IR::AccType::NORMAL);
+    ir.WriteMemory8(address, value, IR::AccType::NORMAL);
     return true;
 }
 
@@ -663,7 +675,7 @@ bool TranslatorVisitor::arm_STRD_imm(Cond cond, bool P, bool U, bool W, Reg n, R
     }
 
     const Reg t2 = t + 1;
-    if ((!P || W) && (n == Reg::PC || n == t || n == t2)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t, t2))) {
         return UnpredictableInstruction();
     }
 
@@ -675,11 +687,11 @@ bool TranslatorVisitor::arm_STRD_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
+    const auto value_a = ir.GetRegister(t);
+    const auto value_b = ir.GetRegister(t2);
     const u32 imm32 = concatenate(imm8a, imm8b).ZeroExtend();
     const auto offset = ir.Imm32(imm32);
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    const auto value_a = ir.GetRegister(t);
-    const auto value_b = ir.GetRegister(t2);
 
     const IR::U64 data = ir.current_location.EFlag() ? ir.Pack2x32To1x64(value_b, value_a)
                                                      : ir.Pack2x32To1x64(value_a, value_b);
@@ -705,7 +717,7 @@ bool TranslatorVisitor::arm_STRD_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t || n == t2)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t, t2))) {
         return UnpredictableInstruction();
     }
 
@@ -713,10 +725,10 @@ bool TranslatorVisitor::arm_STRD_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
-    const auto offset = ir.GetRegister(m);
-    const auto address = GetAddress(ir, P, U, W, n, offset);
     const auto value_a = ir.GetRegister(t);
     const auto value_b = ir.GetRegister(t2);
+    const auto offset = ir.GetRegister(m);
+    const auto address = GetAddress(ir, P, U, W, n, offset);
 
     const IR::U64 data = ir.current_location.EFlag() ? ir.Pack2x32To1x64(value_b, value_a)
                                                      : ir.Pack2x32To1x64(value_a, value_b);
@@ -733,7 +745,7 @@ bool TranslatorVisitor::arm_STRH_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -741,11 +753,12 @@ bool TranslatorVisitor::arm_STRH_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
+    const auto value = ir.LeastSignificantHalf(ir.GetRegister(t));
     const u32 imm32 = concatenate(imm8a, imm8b).ZeroExtend();
     const auto offset = ir.Imm32(imm32);
     const auto address = GetAddress(ir, P, U, W, n, offset);
 
-    ir.WriteMemory16(address, ir.LeastSignificantHalf(ir.GetRegister(t)), IR::AccType::NORMAL);
+    ir.WriteMemory16(address, value, IR::AccType::NORMAL);
     return true;
 }
 
@@ -756,7 +769,7 @@ bool TranslatorVisitor::arm_STRH_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    if ((!P || W) && (n == Reg::PC || n == t)) {
+    if ((!P || W) && (n == Reg::PC || HasUnsupportedWritebackOverlap(ir, P, W, n, t))) {
         return UnpredictableInstruction();
     }
 
@@ -764,10 +777,11 @@ bool TranslatorVisitor::arm_STRH_reg(Cond cond, bool P, bool U, bool W, Reg n, R
         return true;
     }
 
+    const auto value = ir.LeastSignificantHalf(ir.GetRegister(t));
     const auto offset = ir.GetRegister(m);
     const auto address = GetAddress(ir, P, U, W, n, offset);
 
-    ir.WriteMemory16(address, ir.LeastSignificantHalf(ir.GetRegister(t)), IR::AccType::NORMAL);
+    ir.WriteMemory16(address, value, IR::AccType::NORMAL);
     return true;
 }
 
