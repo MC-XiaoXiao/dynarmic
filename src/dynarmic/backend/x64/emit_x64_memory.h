@@ -85,6 +85,9 @@ template<>
 
     if (page_table == ctx.conf.page_table) {
         code.mov(page, qword[r14 + tmp.cvt64() * sizeof(void*)]);
+    } else if (page_table == ctx.conf.read_page_table &&
+               !ctx.conf.fastmem_pointer) {
+        code.mov(page, qword[r13 + tmp.cvt64() * sizeof(void*)]);
     } else {
         code.mov(page, reinterpret_cast<u64>(page_table));
         code.mov(page, qword[page + tmp.cvt64() * sizeof(void*)]);
