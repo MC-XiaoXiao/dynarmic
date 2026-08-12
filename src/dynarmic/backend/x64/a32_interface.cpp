@@ -38,6 +38,19 @@ namespace Dynarmic::A32 {
 
 using namespace Backend::X64;
 
+[[nodiscard]] static std::uint32_t InclusiveRangeEnd(
+        std::uint32_t start_address, std::size_t length) noexcept {
+    ASSERT(length != 0);
+    const auto offset = static_cast<std::uint64_t>(length - 1U);
+    const auto maximum = static_cast<std::uint64_t>(
+            std::numeric_limits<std::uint32_t>::max());
+    if (offset > maximum - start_address) {
+        return std::numeric_limits<std::uint32_t>::max();
+    }
+    return static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(start_address) + offset);
+}
+
 template<auto callback>
 static std::unique_ptr<Callback> GenRuntimeCallback(
         A32::UserCallbacks* cb, const A32::UserConfig& conf) {
@@ -355,11 +368,9 @@ struct NativeCodeSlab::Impl {
     void request_range_transition(std::uint32_t start_address,
                                   std::size_t length, bool finish = true) {
         if (length == 0 || clear_pending) return;
-        const auto last_address = std::min<std::uint64_t>(
-            std::numeric_limits<u32>::max(),
-            static_cast<std::uint64_t>(start_address) + length - 1U);
+        const auto last_address = InclusiveRangeEnd(start_address, length);
         pending_ranges.add(boost::icl::discrete_interval<u32>::closed(
-            start_address, static_cast<u32>(last_address)));
+            start_address, last_address));
         for (const auto& executor : executors) {
             if (executor.active) {
                 Atomic::Or(&executor.state->halt_reason,
@@ -774,7 +785,9 @@ struct Jit::Impl {
 
     void InvalidateCacheRange(std::uint32_t start_address, std::size_t length) {
         std::unique_lock lock{invalidation_mutex};
-        invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(start_address, static_cast<u32>(start_address + length - 1)));
+        if (length == 0) return;
+        invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(
+                start_address, InclusiveRangeEnd(start_address, length)));
         HaltExecution(HaltReason::CacheInvalidation);
     }
 
