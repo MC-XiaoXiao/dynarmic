@@ -204,6 +204,9 @@ struct UserConfig {
     /// If an entry in page_table is null, the relevant memory callback will be called.
     /// If page_table is nullptr, all memory accesses hit the memory callbacks.
     void** page_table = nullptr;
+    /// Optional table used only by memory reads. Writes continue to use
+    /// page_table so immutable or copy-on-write mappings can be read directly.
+    void** read_page_table = nullptr;
     /// Declares how many valid address bits are there in virtual addresses.
     /// Determines the size of page_table. Valid values are between 12 and 64 inclusive.
     /// This is only used if page_table is not nullptr.

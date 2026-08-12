@@ -5,6 +5,9 @@
 
 #include "dynarmic/backend/x64/a64_emit_x64.h"
 
+#include <algorithm>
+#include <numeric>
+
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include <mcl/assert.hpp>
@@ -85,7 +88,11 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) {
         return gprs;
     }();
 
-    RegAlloc reg_alloc{code, gpr_order, any_xmm};
+    const size_t instruction_count = std::accumulate(
+        block.begin(), block.end(), size_t{1}, [](size_t count, const IR::Inst& inst) {
+            return std::max(count, static_cast<size_t>(inst.GetName()) + 1);
+        });
+    RegAlloc reg_alloc{code, gpr_order, any_xmm, instruction_count};
     A64EmitContext ctx{conf, reg_alloc, block};
 
     // Start emitting.

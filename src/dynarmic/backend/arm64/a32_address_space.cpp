@@ -206,6 +206,8 @@ void A32AddressSpace::EmitPrelude() {
     prelude_info.write_memory_16 = EmitCallTrampoline<&A32::UserCallbacks::MemoryWrite16>(code, conf.callbacks);
     prelude_info.write_memory_32 = EmitCallTrampoline<&A32::UserCallbacks::MemoryWrite32>(code, conf.callbacks);
     prelude_info.write_memory_64 = EmitCallTrampoline<&A32::UserCallbacks::MemoryWrite64>(code, conf.callbacks);
+    prelude_info.swap_memory_8 = EmitCallTrampoline<&A32::UserCallbacks::MemorySwap8>(code, conf.callbacks);
+    prelude_info.swap_memory_32 = EmitCallTrampoline<&A32::UserCallbacks::MemorySwap32>(code, conf.callbacks);
     prelude_info.wrapped_write_memory_8 = EmitWrappedWriteCallTrampoline<&A32::UserCallbacks::MemoryWrite8>(code, conf.callbacks);
     prelude_info.wrapped_write_memory_16 = EmitWrappedWriteCallTrampoline<&A32::UserCallbacks::MemoryWrite16>(code, conf.callbacks);
     prelude_info.wrapped_write_memory_32 = EmitWrappedWriteCallTrampoline<&A32::UserCallbacks::MemoryWrite32>(code, conf.callbacks);
@@ -381,6 +383,10 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .check_halt_on_memory_access = conf.check_halt_on_memory_access,
 
         .page_table_pointer = mcl::bit_cast<u64>(conf.page_table),
+        .read_page_table_pointer = mcl::bit_cast<u64>(
+            conf.read_page_table != nullptr
+                ? conf.read_page_table
+                : conf.page_table),
         .page_table_address_space_bits = 32,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
         .silently_mirror_page_table = true,
