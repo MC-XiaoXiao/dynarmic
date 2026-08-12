@@ -869,8 +869,10 @@ struct Jit::Impl {
 
     DispatchCounters GetDispatchCounters() const {
         return DispatchCounters{
-            jit_state.stable_link_hits,
-            jit_state.stable_link_misses,
+            jit_state.fast_link_hits,
+            jit_state.fast_link_misses,
+            jit_state.stable_table_probes,
+            jit_state.stable_table_collisions,
             jit_state.rsb_hits,
             jit_state.rsb_misses,
         };

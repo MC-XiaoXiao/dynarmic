@@ -25,8 +25,10 @@ namespace A32 {
 class Jit;
 
 struct DispatchCounters {
-    std::uint64_t stable_link_hits{};
-    std::uint64_t stable_link_misses{};
+    std::uint64_t fast_link_hits{};
+    std::uint64_t fast_link_misses{};
+    std::uint64_t stable_table_probes{};
+    std::uint64_t stable_table_collisions{};
     std::uint64_t rsb_hits{};
     std::uint64_t rsb_misses{};
 };

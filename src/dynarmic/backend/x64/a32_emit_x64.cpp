@@ -6,6 +6,7 @@
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <utility>
@@ -1325,22 +1326,29 @@ void A32EmitX64::EmitStableLink(
         const IR::LocationDescriptor& target_desc) {
     using namespace Xbyak::util;
 
-    Xbyak::Label miss;
+    Xbyak::Label miss, descriptor_match;
     const auto target = target_desc.Value();
     code.mov(rbx, target);
     code.mov(r12, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
     code.mov(r12, qword[r12]);
     code.lea(rbp, ptr[r12 + fast_dispatch_table_index(target)]);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_table_probes)]);
     code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
-    code.jne(miss, code.T_NEAR);
+    code.je(descriptor_match, code.T_NEAR);
+    code.cmp(qword[rbp + offsetof(FastDispatchEntry, location_descriptor)],
+             std::numeric_limits<u32>::max());
+    code.je(miss, code.T_NEAR);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_table_collisions)]);
+    code.jmp(miss, code.T_NEAR);
+    code.L(descriptor_match);
     code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
     code.test(rax, rax);
     code.jz(miss, code.T_NEAR);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
+    code.inc(qword[r15 + offsetof(A32JitState, fast_link_hits)]);
     code.jmp(rax);
 
     code.L(miss);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
+    code.inc(qword[r15 + offsetof(A32JitState, fast_link_misses)]);
     code.jmp(terminal_handler_fast_dispatch_hint);
 }
 
@@ -1355,7 +1363,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
 
     using namespace Xbyak::util;
 
-    Xbyak::Label miss, done;
+    Xbyak::Label miss, done, descriptor_match;
     const auto target_value = target.Value();
     code.mov(index_reg.cvt32(), dword[r15 + offsetof(A32JitState, rsb_ptr)]);
     code.mov(loc_desc_reg, target_value);
@@ -1369,16 +1377,22 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
     code.mov(rcx, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
     code.mov(rcx, qword[rcx]);
     code.lea(rcx, ptr[rcx + fast_dispatch_table_index(target_value)]);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_table_probes)]);
     code.cmp(loc_desc_reg,
              qword[rcx + offsetof(FastDispatchEntry, location_descriptor)]);
-    code.jne(miss, code.T_NEAR);
+    code.je(descriptor_match, code.T_NEAR);
+    code.cmp(qword[rcx + offsetof(FastDispatchEntry, location_descriptor)],
+             std::numeric_limits<u32>::max());
+    code.je(miss, code.T_NEAR);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_table_collisions)]);
+    code.jmp(miss, code.T_NEAR);
+    code.L(descriptor_match);
     code.mov(rcx, qword[rcx + offsetof(FastDispatchEntry, code_ptr)]);
     code.test(rcx, rcx);
     code.jz(miss, code.T_NEAR);
     code.mov(qword[r15 + index_reg * sizeof(u64) +
                      offsetof(A32JitState, rsb_codeptrs)],
              rcx);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
     code.jmp(done, code.T_NEAR);
 
     code.L(miss);
@@ -1386,7 +1400,6 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
     code.mov(qword[r15 + index_reg * sizeof(u64) +
                      offsetof(A32JitState, rsb_codeptrs)],
              rcx);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
 
     code.L(done);
     code.add(index_reg.cvt32(), 1);
