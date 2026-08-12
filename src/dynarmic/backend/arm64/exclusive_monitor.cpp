@@ -27,9 +27,9 @@ void ExclusiveMonitor::Unlock() {
 }
 
 bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
-    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
-
     Lock();
+    const VAddr masked_address =
+        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
     if (exclusive_addresses[processor_id] != masked_address) {
         Unlock();
         return false;

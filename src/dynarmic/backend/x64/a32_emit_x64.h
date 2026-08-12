@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -52,7 +53,27 @@ public:
 
     void ClearCache() override;
 
-    void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
+    tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(
+        const boost::icl::interval_set<u32>& ranges);
+
+    // The dispatch table is mutable executor state. Keep its representation
+    // public so a Jit implementation can own it independently of generated
+    // code and emitter metadata.
+    struct FastDispatchEntry {
+        u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
+        const void* code_ptr = nullptr;
+    };
+    static_assert(sizeof(FastDispatchEntry) == 0x10);
+    static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
+    static constexpr size_t fast_dispatch_table_size = 0x10000;
+    // Keep the slot selection deterministic and independent of the
+    // executor-local table address. Shared generated blocks can therefore
+    // embed this slot offset and probe it without entering the full handler.
+    [[nodiscard]] static constexpr u64 fast_dispatch_table_index(
+        u64 location_descriptor) noexcept {
+        return (location_descriptor ^ (location_descriptor >> 32U)) &
+               fast_dispatch_table_mask;
+    }
 
 protected:
     const A32::UserConfig conf;
@@ -61,14 +82,8 @@ protected:
 
     void EmitCondPrelude(const A32EmitContext& ctx);
 
-    struct FastDispatchEntry {
-        u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
-        const void* code_ptr = nullptr;
-    };
-    static_assert(sizeof(FastDispatchEntry) == 0x10);
-    static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x10000;
-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
+    std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
+    FastDispatchEntry* fast_dispatch_table = nullptr;
     void ClearFastDispatchTable();
 
     void (*memory_read_128)() = nullptr;   // Dummy
@@ -81,7 +96,7 @@ protected:
 
     const void* terminal_handler_pop_rsb_hint;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
+    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
     void GenTerminalHandlers();
 
     // Microinstruction emitters
@@ -138,7 +153,12 @@ protected:
     void EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
     void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
 
+    void EmitStableLink(const IR::LocationDescriptor& target_desc);
+    void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg,
+                       IR::LocationDescriptor target) override;
+
     // Patching
+    bool ShouldPatchExistingBlocks() const override;
     void Unpatch(const IR::LocationDescriptor& target_desc) override;
     void EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;

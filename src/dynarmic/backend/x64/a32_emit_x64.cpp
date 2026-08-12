@@ -82,6 +82,17 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
 
 A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface)
         : EmitX64(code), conf(std::move(conf)), jit_interface(jit_interface) {
+    if (this->conf.fast_dispatch_table_storage) {
+        fast_dispatch_table = static_cast<FastDispatchEntry*>(this->conf.fast_dispatch_table_storage);
+    } else {
+        owned_fast_dispatch_table = std::make_unique<FastDispatchEntry[]>(fast_dispatch_table_size);
+        fast_dispatch_table = owned_fast_dispatch_table.get();
+    }
+    if (this->conf.fast_dispatch_table_link) {
+        this->conf.fast_dispatch_table_link->store(
+                reinterpret_cast<u64>(fast_dispatch_table),
+                std::memory_order_release);
+    }
     GenFastmemFallbacks();
     GenTerminalHandlers();
     code.PreludeComplete();
@@ -192,8 +203,22 @@ void A32EmitX64::ClearCache() {
     fastmem_patch_info.clear();
 }
 
-void A32EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
-    InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
+tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
+    const boost::icl::interval_set<u32>& ranges) {
+    const auto locations = block_ranges.InvalidateRanges(ranges);
+    if (conf.fast_dispatch_table_link &&
+        conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        // Shared blocks are immutable. Remove only their descriptors and
+        // discard patch metadata; rewriting old terminal bytes would race an
+        // executor that still has a pointer into the slab.
+        for (const auto& location : locations) {
+            block_descriptors.erase(location);
+        }
+        patch_information.clear();
+    } else {
+        InvalidateBasicBlocks(locations);
+    }
+    return locations;
 }
 
 void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {
@@ -204,7 +229,7 @@ void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {
 
     ASSERT(ctx.block.HasConditionFailedLocation());
 
-    Xbyak::Label pass = EmitCond(ctx.block.GetCondition());
+    Xbyak::Label pass = EmitCond(ctx.block.GetCondition(), code.T_NEAR);
     if (conf.enable_cycle_counting) {
         EmitAddCycles(ctx.block.ConditionFailedCycleCount());
     }
@@ -214,7 +239,7 @@ void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {
 
 void A32EmitX64::ClearFastDispatchTable() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        fast_dispatch_table.fill({});
+        std::fill_n(fast_dispatch_table, fast_dispatch_table_size, FastDispatchEntry{});
     }
 }
 
@@ -245,6 +270,13 @@ void A32EmitX64::GenTerminalHandlers() {
         code.jne(code.GetReturnFromRunCodeAddress());
     }
     code.mov(rax, qword[r15 + offsetof(A32JitState, rsb_codeptrs) + rax * sizeof(u64)]);
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        // Linked executors do not embed per-emitter native return addresses
+        // in the RSB. Resolve the descriptor through the executor-owned fast
+        // dispatch table instead.
+        code.test(rax, rax);
+        code.jz(rsb_cache_miss);
+    }
     code.jmp(rax);
     PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a32_terminal_handler_pop_rsb_hint");
 
@@ -253,11 +285,18 @@ void A32EmitX64::GenTerminalHandlers() {
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
-        code.mov(rbp, rbx);
-        if (code.HasHostFeature(HostFeature::SSE42)) {
-            code.crc32(rbp, r12);
+        if (conf.fast_dispatch_table_link) {
+            code.mov(
+                    r12,
+                    qword[r15 +
+                          offsetof(A32JitState, fast_dispatch_table_link)]);
+            code.mov(r12, qword[r12]);
+        } else {
+            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table));
         }
+        code.mov(rbp, rbx);
+        code.shr(rbp, 32);
+        code.xor_(rbp, rbx);
         code.and_(ebp, fast_dispatch_table_mask);
         code.lea(rbp, ptr[r12 + rbp]);
         code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
@@ -271,13 +310,14 @@ void A32EmitX64::GenTerminalHandlers() {
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
 
         code.align();
-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
-        if (code.HasHostFeature(HostFeature::SSE42)) {
-            code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
-        }
-        code.and_(code.ABI_PARAM1.cvt32(), fast_dispatch_table_mask);
-        code.lea(code.ABI_RETURN, code.ptr[code.ABI_PARAM1 + code.ABI_PARAM2]);
+        fast_dispatch_table_lookup =
+                code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
+        code.mov(code.ABI_RETURN, code.ABI_PARAM1);
+        code.shr(code.ABI_RETURN, 32);
+        code.xor_(code.ABI_RETURN, code.ABI_PARAM1);
+        code.and_(code.ABI_RETURN.cvt32(), fast_dispatch_table_mask);
+        code.lea(code.ABI_RETURN,
+                 code.ptr[code.ABI_RETURN + code.ABI_PARAM2]);
         code.ret();
         PerfMapRegister(fast_dispatch_table_lookup, code.getCurr(), "a32_fast_dispatch_table_lookup");
     }
@@ -693,7 +733,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
     }
 
     ctx.reg_alloc.HostCall(nullptr);
-    Devirtualize<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(conf.callbacks).EmitCall(code);
+    DevirtualizeFromLink<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A32JitState, callbacks_link)).EmitCall(code);
 }
 
 void A32EmitX64::EmitA32BXWritePC(A32EmitContext& ctx, IR::Inst* inst) {
@@ -750,16 +792,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
         ctx.reg_alloc.HostCall(nullptr);
         code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
         code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
-        Devirtualize<&A32::UserCallbacks::AddTicks>(conf.callbacks).EmitCall(code);
+        DevirtualizeFromLink<&A32::UserCallbacks::AddTicks>(
+                conf.callbacks, conf.callbacks_link,
+                offsetof(A32JitState, callbacks_link)).EmitCall(code);
         ctx.reg_alloc.EndOfAllocScope();
     }
 
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ctx.reg_alloc.HostCall(nullptr, {}, args[0]);
-    Devirtualize<&A32::UserCallbacks::CallSVC>(conf.callbacks).EmitCall(code);
+    DevirtualizeFromLink<&A32::UserCallbacks::CallSVC>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A32JitState, callbacks_link)).EmitCall(code);
 
     if (conf.enable_cycle_counting) {
-        Devirtualize<&A32::UserCallbacks::GetTicksRemaining>(conf.callbacks).EmitCall(code);
+        DevirtualizeFromLink<&A32::UserCallbacks::GetTicksRemaining>(
+                conf.callbacks, conf.callbacks_link,
+                offsetof(A32JitState, callbacks_link)).EmitCall(code);
         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
         code.SwitchMxcsrOnEntry();
@@ -773,7 +821,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
     if (conf.enable_cycle_counting) {
         code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
         code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
-        Devirtualize<&A32::UserCallbacks::AddTicks>(conf.callbacks).EmitCall(code);
+        DevirtualizeFromLink<&A32::UserCallbacks::AddTicks>(
+                conf.callbacks, conf.callbacks_link,
+                offsetof(A32JitState, callbacks_link)).EmitCall(code);
     }
     ctx.reg_alloc.EndOfAllocScope();
 
@@ -781,13 +831,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
     ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
     const u32 pc = args[0].GetImmediateU32();
     const u64 exception = args[1].GetImmediateU64();
-    Devirtualize<&A32::UserCallbacks::ExceptionRaised>(conf.callbacks).EmitCall(code, [&](RegList param) {
+    DevirtualizeFromLink<&A32::UserCallbacks::ExceptionRaised>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A32JitState, callbacks_link)).EmitCall(code, [&](RegList param) {
         code.mov(param[0], pc);
         code.mov(param[1], exception);
     });
 
     if (conf.enable_cycle_counting) {
-        Devirtualize<&A32::UserCallbacks::GetTicksRemaining>(conf.callbacks).EmitCall(code);
+        DevirtualizeFromLink<&A32::UserCallbacks::GetTicksRemaining>(
+                conf.callbacks, conf.callbacks_link,
+                offsetof(A32JitState, callbacks_link)).EmitCall(code);
         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
         code.SwitchMxcsrOnEntry();
@@ -852,11 +906,25 @@ static void EmitCoprocessorException() {
     ASSERT_FALSE("Should raise coproc exception here");
 }
 
-static void CallCoprocCallback(BlockOfCode& code, RegAlloc& reg_alloc, A32::Coprocessor::Callback callback, IR::Inst* inst = nullptr, std::optional<Argument::copyable_reference> arg0 = {}, std::optional<Argument::copyable_reference> arg1 = {}) {
+static void CallCoprocCallback(BlockOfCode& code, RegAlloc& reg_alloc,
+                               const A32::UserConfig& conf,
+                               A32::Coprocessor::Callback callback,
+                               IR::Inst* inst = nullptr,
+                               std::optional<Argument::copyable_reference> arg0 = {},
+                               std::optional<Argument::copyable_reference> arg1 = {}) {
     reg_alloc.HostCall(inst, {}, arg0, arg1);
 
     if (callback.user_arg) {
-        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(*callback.user_arg));
+        if (conf.coprocessor_user_arg_link) {
+            code.mov(
+                    code.ABI_PARAM1,
+                    code.qword[code.r15 + offsetof(
+                            A32JitState, coprocessor_user_arg_link)]);
+            code.mov(code.ABI_PARAM1, code.qword[code.ABI_PARAM1]);
+        } else {
+            code.mov(code.ABI_PARAM1,
+                     reinterpret_cast<u64>(*callback.user_arg));
+        }
     }
 
     code.CallFunction(callback.function);
@@ -884,7 +952,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
         return;
     }
 
-    CallCoprocCallback(code, ctx.reg_alloc, *action);
+    CallCoprocCallback(code, ctx.reg_alloc, conf, *action);
 }
 
 void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
@@ -911,7 +979,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
     }
 
     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
-        CallCoprocCallback(code, ctx.reg_alloc, *cb, nullptr, args[1]);
+        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, nullptr, args[1]);
         return;
     }
 
@@ -951,7 +1019,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst) 
     }
 
     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
-        CallCoprocCallback(code, ctx.reg_alloc, *cb, nullptr, args[1], args[2]);
+        CallCoprocCallback(
+                code, ctx.reg_alloc, conf, *cb, nullptr, args[1], args[2]);
         return;
     }
 
@@ -995,7 +1064,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
     }
 
     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
-        CallCoprocCallback(code, ctx.reg_alloc, *cb, inst);
+        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, inst);
         return;
     }
 
@@ -1035,7 +1104,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
     }
 
     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
-        CallCoprocCallback(code, ctx.reg_alloc, *cb, inst);
+        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, inst);
         return;
     }
 
@@ -1086,7 +1155,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
         return;
     }
 
-    CallCoprocCallback(code, ctx.reg_alloc, *action, nullptr, args[1]);
+    CallCoprocCallback(code, ctx.reg_alloc, conf, *action, nullptr, args[1]);
 }
 
 void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
@@ -1116,7 +1185,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
         return;
     }
 
-    CallCoprocCallback(code, ctx.reg_alloc, *action, nullptr, args[1]);
+    CallCoprocCallback(code, ctx.reg_alloc, conf, *action, nullptr, args[1]);
 }
 
 std::string A32EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescriptor& ir_descriptor) const {
@@ -1137,7 +1206,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
     code.mov(code.ABI_PARAM3.cvt32(), 1);
     code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
     code.SwitchMxcsrOnExit();
-    Devirtualize<&A32::UserCallbacks::InterpreterFallback>(conf.callbacks).EmitCall(code);
+    DevirtualizeFromLink<&A32::UserCallbacks::InterpreterFallback>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A32JitState, callbacks_link)).EmitCall(code);
     code.ReturnFromRunCode(true);  // TODO: Check cycles
 }
 
@@ -1163,6 +1234,15 @@ void A32EmitX64::EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_locat
 
 void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     EmitSetUpperLocationDescriptor(terminal.next, initial_location);
+
+    // Linked executors keep native code context-independent. Publish the
+    // target PC before testing the dispatcher guard so the linked fast
+    // dispatcher can reconstruct terminal.next without embedding a target
+    // CodePtr in the shared instruction stream. The return path below writes
+    // the same PC again for the guard-failed case.
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
+    }
 
     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
         code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
@@ -1198,9 +1278,22 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
 void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     EmitSetUpperLocationDescriptor(terminal.next, initial_location);
 
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
+    }
+
     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
         code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
         code.ReturnFromRunCode();
+        return;
+    }
+
+    if (conf.fast_dispatch_table_link &&
+        conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        // Shared generated blocks remain immutable. Probe the executor-local
+        // generation slot directly; a miss enters the existing dispatcher,
+        // which compiles or publishes the target and fills the same slot.
+        EmitStableLink(terminal.next);
         return;
     }
 
@@ -1210,6 +1303,79 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::Location
     } else {
         EmitPatchJmp(terminal.next);
     }
+}
+
+void A32EmitX64::EmitStableLink(
+        const IR::LocationDescriptor& target_desc) {
+    using namespace Xbyak::util;
+
+    Xbyak::Label miss;
+    const auto target = target_desc.Value();
+    code.mov(rbx, target);
+    code.mov(r12, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
+    code.mov(r12, qword[r12]);
+    code.lea(rbp, ptr[r12 + fast_dispatch_table_index(target)]);
+    code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
+    code.jne(miss, code.T_NEAR);
+    code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
+    code.test(rax, rax);
+    code.jz(miss, code.T_NEAR);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
+    code.jmp(rax);
+
+    code.L(miss);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
+    code.jmp(terminal_handler_fast_dispatch_hint);
+}
+
+void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
+                               Xbyak::Reg64 index_reg,
+                               IR::LocationDescriptor target) {
+    if (!(conf.fast_dispatch_table_link &&
+          conf.HasOptimization(OptimizationFlag::FastDispatch))) {
+        EmitX64::PushRSBHelper(loc_desc_reg, index_reg, target);
+        return;
+    }
+
+    using namespace Xbyak::util;
+
+    Xbyak::Label miss, done;
+    const auto target_value = target.Value();
+    code.mov(index_reg.cvt32(), dword[r15 + offsetof(A32JitState, rsb_ptr)]);
+    code.mov(loc_desc_reg, target_value);
+    code.mov(qword[r15 + index_reg * sizeof(u64) +
+                     offsetof(A32JitState, rsb_location_descriptors)],
+             loc_desc_reg);
+
+    // The RSB stores only a descriptor and a generation-local pointer.  Query
+    // the current executor's stable table here so shared generated code never
+    // embeds a private native address.
+    code.mov(rcx, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
+    code.mov(rcx, qword[rcx]);
+    code.lea(rcx, ptr[rcx + fast_dispatch_table_index(target_value)]);
+    code.cmp(loc_desc_reg,
+             qword[rcx + offsetof(FastDispatchEntry, location_descriptor)]);
+    code.jne(miss, code.T_NEAR);
+    code.mov(rcx, qword[rcx + offsetof(FastDispatchEntry, code_ptr)]);
+    code.test(rcx, rcx);
+    code.jz(miss, code.T_NEAR);
+    code.mov(qword[r15 + index_reg * sizeof(u64) +
+                     offsetof(A32JitState, rsb_codeptrs)],
+             rcx);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
+    code.jmp(done, code.T_NEAR);
+
+    code.L(miss);
+    code.xor_(ecx, ecx);
+    code.mov(qword[r15 + index_reg * sizeof(u64) +
+                     offsetof(A32JitState, rsb_codeptrs)],
+             rcx);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
+
+    code.L(done);
+    code.add(index_reg.cvt32(), 1);
+    code.and_(index_reg.cvt32(), u32(A32JitState::RSBPtrMask));
+    code.mov(dword[r15 + offsetof(A32JitState, rsb_ptr)], index_reg.cvt32());
 }
 
 void A32EmitX64::EmitTerminalImpl(IR::Term::PopRSBHint, IR::LocationDescriptor, bool is_single_step) {
@@ -1231,7 +1397,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::FastDispatchHint, IR::LocationDescri
 }
 
 void A32EmitX64::EmitTerminalImpl(IR::Term::If terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
-    Xbyak::Label pass = EmitCond(terminal.if_);
+    Xbyak::Label pass = EmitCond(terminal.if_, code.T_NEAR);
     EmitTerminal(terminal.else_, initial_location, is_single_step);
     code.L(pass);
     EmitTerminal(terminal.then_, initial_location, is_single_step);
@@ -1240,7 +1406,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::If terminal, IR::LocationDescriptor 
 void A32EmitX64::EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     Xbyak::Label fail;
     code.cmp(code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
-    code.jz(fail);
+    code.jz(fail, code.T_NEAR);
     EmitTerminal(terminal.then_, initial_location, is_single_step);
     code.L(fail);
     EmitTerminal(terminal.else_, initial_location, is_single_step);
@@ -1254,7 +1420,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
 
 void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jg(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jg(target_code_ptr);
     } else {
         code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
@@ -1265,7 +1433,9 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jz(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jz(target_code_ptr);
     } else {
         code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
@@ -1276,7 +1446,9 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jmp(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jmp(target_code_ptr);
     } else {
         code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
@@ -1286,6 +1458,12 @@ void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
 }
 
 void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        const CodePtr patch_location = code.getCurr();
+        code.xor_(code.ecx, code.ecx);
+        code.EnsurePatchLocationSize(patch_location, 10);
+        return;
+    }
     if (!target_code_ptr) {
         target_code_ptr = code.GetReturnFromRunCodeAddress();
     }
@@ -1294,11 +1472,19 @@ void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
     code.EnsurePatchLocationSize(patch_location, 10);
 }
 
+bool A32EmitX64::ShouldPatchExistingBlocks() const {
+    // Linked shared-slab terminals are emitted against the executor-local
+    // dispatcher from the start. Registering a later target must not rewrite
+    // instruction bytes that another executor may currently be running.
+    return !(conf.fast_dispatch_table_link &&
+             conf.HasOptimization(OptimizationFlag::FastDispatch));
+}
+
 void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.DisableWriting();
-        (*fast_dispatch_table_lookup)(location.Value()) = {};
+        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table) = {};
         code.EnableWriting();
     }
 }

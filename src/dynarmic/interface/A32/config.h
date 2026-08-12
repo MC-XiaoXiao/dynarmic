@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,10 @@
 #include "dynarmic/interface/optimization_flags.h"
 
 namespace Dynarmic {
+namespace IR {
+class Block;
+}  // namespace IR
+
 class ExclusiveMonitor;
 }  // namespace Dynarmic
 
@@ -25,6 +30,7 @@ namespace A32 {
 using VAddr = std::uint32_t;
 
 class Coprocessor;
+class NativeCodeSlab;
 
 enum class Exception {
     /// An UndefinedFault occured due to executing instruction with an unallocated encoding
@@ -80,12 +86,38 @@ struct UserCallbacks : public TranslateCallbacks {
             std::uint64_t /*location_descriptor*/,
             std::uint64_t /*translation_nanoseconds*/) noexcept {}
 
+    // Called after the backend has emitted host code for the block and gives
+    // clients a chance to persist a versioned, portable representation of the
+    // optimized IR. The default preserves the legacy callback contract.
+    virtual void CodeTranslationCompleted(
+            std::uint64_t location_descriptor,
+            std::uint64_t translation_nanoseconds,
+            const Dynarmic::IR::Block& /*block*/) noexcept {
+        CodeTranslationCompleted(location_descriptor, translation_nanoseconds);
+    }
+
+    // Called after a translate-only request has produced the same optimized
+    // IR that a backend would otherwise emit. The default lets existing
+    // portable-IR consumers share their completed-translation handler.
+    virtual void PortableIRGenerated(
+            // iLEMU portable-IR patch state: PortableIRGenerated-v1.
+            std::uint64_t location_descriptor,
+            std::uint64_t translation_nanoseconds,
+            const Dynarmic::IR::Block& block) noexcept {
+        CodeTranslationCompleted(location_descriptor, translation_nanoseconds, block);
+    }
+
     // Reads through these callbacks may not be aligned.
     // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
     virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;
     virtual std::uint16_t MemoryRead16(VAddr vaddr) = 0;
     virtual std::uint32_t MemoryRead32(VAddr vaddr) = 0;
     virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
+
+    // Called immediately before an exclusive load establishes its monitor
+    // reservation. This is separate from MemoryRead* so a memory backend can
+    // revoke a direct-write alias before the following ordinary store.
+    virtual void MemoryReadExclusive(VAddr /*vaddr*/, std::size_t /*size*/) {}
 
     // Writes through these callbacks may not be aligned.
     virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
@@ -131,6 +163,61 @@ struct UserCallbacks : public TranslateCallbacks {
 
 struct UserConfig {
     UserCallbacks* callbacks;
+
+    // Optional shared immutable native-code slab. The first Jit using a slab
+    // initializes its host prelude and emitter; later Jits reuse published
+    // blocks while retaining executor-local state and dispatch tables.
+    NativeCodeSlab* native_code_slab = nullptr;
+
+    // Optional executor-owned indirection used by generated host callbacks.
+    // The link must remain alive for the Jit and contain a UserCallbacks*
+    // compatible with callbacks. Backends that do not support it continue to
+    // embed callbacks directly.
+    const std::atomic<std::uint64_t>* callbacks_link = nullptr;
+
+    // Optional executor-owned indirection for the dispatcher lookup callback.
+    // The target is the lookup callback's opaque argument (normally the
+    // executor's Jit implementation), and remains valid for the Jit lifetime.
+    std::atomic<std::uint64_t>* lookup_link = nullptr;
+
+    // Optional executor-owned indirection for the backend-owned runtime
+    // configuration. The backend publishes its stable UserConfig address into
+    // this cell, allowing generated helpers to avoid embedding that address.
+    std::atomic<std::uint64_t>* runtime_config_link = nullptr;
+
+    // Optional executor-owned indirection for the mutable fast-dispatch table
+    // used by terminal handlers. The backend publishes its table address into
+    // this cell after constructing the emitter.
+    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
+
+    // Optional backend-owned storage for the mutable fast-dispatch table.
+    // When supplied, the x64 backend uses this address instead of embedding
+    // the table in its emitter object. The caller must keep the storage alive
+    // for the Jit lifetime and provide fast_dispatch_table_size entries in
+    // the backend's FastDispatchEntry layout.
+    void* fast_dispatch_table_storage = nullptr;
+
+    // Optional executor-owned indirection for the write page-table base loaded
+    // by the generated run prelude. The pointed-to cell contains the same
+    // table address as page_table and remains valid for the Jit lifetime.
+    const std::atomic<std::uint64_t>* page_table_link = nullptr;
+
+    // Optional executor-owned indirection for the read page-table base loaded
+    // by the generated run prelude. The pointed-to cell contains the same
+    // table address as read_page_table and remains valid for the Jit lifetime.
+    const std::atomic<std::uint64_t>* read_page_table_link = nullptr;
+
+    // Optional executor-owned indirection for non-null Coprocessor::Callback
+    // user arguments. Clients must set this only when every such callback is
+    // intentionally bound to the same linked object.
+    const std::atomic<std::uint64_t>* coprocessor_user_arg_link = nullptr;
+
+    // Optional executor-owned indirection for the global exclusive monitor's
+    // lock and reservation arrays. Fast exclusive-memory code loads these
+    // bases through the active JitState instead of embedding host pointers.
+    const std::atomic<std::uint64_t>* exclusive_monitor_lock_link = nullptr;
+    const std::atomic<std::uint64_t>* exclusive_monitor_addresses_link = nullptr;
+    const std::atomic<std::uint64_t>* exclusive_monitor_values_link = nullptr;
 
     size_t processor_id = 0;
     ExclusiveMonitor* global_monitor = nullptr;

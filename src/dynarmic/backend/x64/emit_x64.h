@@ -102,10 +102,13 @@ protected:
 
     // Helpers
     virtual std::string LocationDescriptorToFriendlyName(const IR::LocationDescriptor&) const = 0;
+    virtual bool ShouldPatchExistingBlocks() const;
     void EmitAddCycles(size_t cycles);
-    Xbyak::Label EmitCond(IR::Cond cond);
+    Xbyak::Label EmitCond(
+        IR::Cond cond,
+        Xbyak::CodeGenerator::LabelType label_type = Xbyak::CodeGenerator::T_AUTO);
     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
-    void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
+    virtual void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
 
     void EmitVerboseDebuggingOutput(RegAlloc& reg_alloc);
 

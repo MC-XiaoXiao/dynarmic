@@ -276,7 +276,8 @@ void EmitX64::EmitAddCycles(size_t cycles) {
     code.sub(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], static_cast<u32>(cycles));
 }
 
-Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
+Xbyak::Label EmitX64::EmitCond(
+        IR::Cond cond, Xbyak::CodeGenerator::LabelType label_type) {
     Xbyak::Label pass;
 
     code.mov(eax, dword[r15 + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
@@ -285,46 +286,46 @@ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
 
     switch (cond) {
     case IR::Cond::EQ:
-        code.jz(pass);
+        code.jz(pass, label_type);
         break;
     case IR::Cond::NE:
-        code.jnz(pass);
+        code.jnz(pass, label_type);
         break;
     case IR::Cond::CS:
-        code.jc(pass);
+        code.jc(pass, label_type);
         break;
     case IR::Cond::CC:
-        code.jnc(pass);
+        code.jnc(pass, label_type);
         break;
     case IR::Cond::MI:
-        code.js(pass);
+        code.js(pass, label_type);
         break;
     case IR::Cond::PL:
-        code.jns(pass);
+        code.jns(pass, label_type);
         break;
     case IR::Cond::VS:
-        code.jo(pass);
+        code.jo(pass, label_type);
         break;
     case IR::Cond::VC:
-        code.jno(pass);
+        code.jno(pass, label_type);
         break;
     case IR::Cond::HI:
-        code.ja(pass);
+        code.ja(pass, label_type);
         break;
     case IR::Cond::LS:
-        code.jna(pass);
+        code.jna(pass, label_type);
         break;
     case IR::Cond::GE:
-        code.jge(pass);
+        code.jge(pass, label_type);
         break;
     case IR::Cond::LT:
-        code.jl(pass);
+        code.jl(pass, label_type);
         break;
     case IR::Cond::GT:
-        code.jg(pass);
+        code.jg(pass, label_type);
         break;
     case IR::Cond::LE:
-        code.jle(pass);
+        code.jle(pass, label_type);
         break;
     default:
         ASSERT_MSG(false, "Unknown cond {}", static_cast<size_t>(cond));
@@ -336,11 +337,17 @@ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
 
 EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& descriptor, CodePtr entrypoint, size_t size) {
     PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
-    Patch(descriptor, entrypoint);
+    if (ShouldPatchExistingBlocks()) {
+        Patch(descriptor, entrypoint);
+    }
 
     BlockDescriptor block_desc{entrypoint, size};
     block_descriptors.insert({IR::LocationDescriptor{descriptor.Value()}, block_desc});
     return block_desc;
+}
+
+bool EmitX64::ShouldPatchExistingBlocks() const {
+    return true;
 }
 
 void EmitX64::EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step) {

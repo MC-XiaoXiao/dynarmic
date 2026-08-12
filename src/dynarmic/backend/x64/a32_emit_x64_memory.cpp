@@ -29,22 +29,46 @@ using namespace Xbyak::util;
 void A32EmitX64::GenFastmemFallbacks() {
     const std::initializer_list<int> idxes{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
     const std::array<std::pair<size_t, ArgCallback>, 4> read_callbacks{{
-        {8, Devirtualize<&A32::UserCallbacks::MemoryRead8>(conf.callbacks)},
-        {16, Devirtualize<&A32::UserCallbacks::MemoryRead16>(conf.callbacks)},
-        {32, Devirtualize<&A32::UserCallbacks::MemoryRead32>(conf.callbacks)},
-        {64, Devirtualize<&A32::UserCallbacks::MemoryRead64>(conf.callbacks)},
+        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead8>(
+                 conf.callbacks, conf.callbacks_link,
+                 offsetof(A32JitState, callbacks_link))},
+        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead16>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead32>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead64>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
     }};
     const std::array<std::pair<size_t, ArgCallback>, 4> write_callbacks{{
-        {8, Devirtualize<&A32::UserCallbacks::MemoryWrite8>(conf.callbacks)},
-        {16, Devirtualize<&A32::UserCallbacks::MemoryWrite16>(conf.callbacks)},
-        {32, Devirtualize<&A32::UserCallbacks::MemoryWrite32>(conf.callbacks)},
-        {64, Devirtualize<&A32::UserCallbacks::MemoryWrite64>(conf.callbacks)},
+        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite8>(
+                 conf.callbacks, conf.callbacks_link,
+                 offsetof(A32JitState, callbacks_link))},
+        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite16>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite32>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite64>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
     }};
     const std::array<std::pair<size_t, ArgCallback>, 4> exclusive_write_callbacks{{
-        {8, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive8>(conf.callbacks)},
-        {16, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive16>(conf.callbacks)},
-        {32, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive32>(conf.callbacks)},
-        {64, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive64>(conf.callbacks)},
+        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive8>(
+                 conf.callbacks, conf.callbacks_link,
+                 offsetof(A32JitState, callbacks_link))},
+        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive16>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive32>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
+        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive64>(
+                  conf.callbacks, conf.callbacks_link,
+                  offsetof(A32JitState, callbacks_link))},
     }};
 
     for (bool ordered : {false, true}) {
@@ -131,6 +155,19 @@ void A32EmitX64::GenFastmemFallbacks() {
     }
 }
 
+void EmitRuntimeConfigPointer(
+        BlockOfCode& code, const A32::UserConfig& conf) {
+    if (conf.runtime_config_link) {
+        code.mov(
+                code.ABI_PARAM1,
+                code.qword[code.r15 +
+                           offsetof(A32JitState, runtime_config_link)]);
+        code.mov(code.ABI_PARAM1, code.qword[code.ABI_PARAM1]);
+    } else {
+        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
+    }
+}
+
 #define Axx A32
 #include "dynarmic/backend/x64/emit_x64_memory.cpp.inc"
 #undef Axx
@@ -171,7 +208,9 @@ template<std::size_t bitsize, auto callback>
 void A32EmitX64::EmitMemorySwap(A32EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ctx.reg_alloc.HostCall(inst, {}, args[1], args[2]);
-    Devirtualize<callback>(conf.callbacks).EmitCall(code);
+    DevirtualizeFromLink<callback>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A32JitState, callbacks_link)).EmitCall(code);
     code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
     EmitCheckMemoryAbort(ctx, inst);
 }
@@ -189,7 +228,7 @@ void A32EmitX64::EmitA32ClearExclusive(A32EmitContext&, IR::Inst*) {
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveReadMemoryInline<8, &A32::UserCallbacks::MemoryRead8>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<8, &A32::UserCallbacks::MemoryRead8>(ctx, inst);
@@ -197,7 +236,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveReadMemoryInline<16, &A32::UserCallbacks::MemoryRead16>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<16, &A32::UserCallbacks::MemoryRead16>(ctx, inst);
@@ -205,7 +244,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveReadMemoryInline<32, &A32::UserCallbacks::MemoryRead32>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<32, &A32::UserCallbacks::MemoryRead32>(ctx, inst);
@@ -213,7 +252,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveReadMemoryInline<64, &A32::UserCallbacks::MemoryRead64>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<64, &A32::UserCallbacks::MemoryRead64>(ctx, inst);
@@ -221,7 +260,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveWriteMemoryInline<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
@@ -229,7 +268,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveWriteMemoryInline<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
@@ -237,7 +276,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* in
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveWriteMemoryInline<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
@@ -245,7 +284,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* in
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory64(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
         EmitExclusiveWriteMemoryInline<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);

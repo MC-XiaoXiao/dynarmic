@@ -351,44 +351,104 @@ const void* EmitWriteMemoryMov(BlockOfCode& code, const Xbyak::RegExp& addr, int
     return fastmem_location;
 }
 
+template<typename Pointer>
+void EmitExclusiveMonitorBase(
+        BlockOfCode& code, bool use_link, std::size_t link_offset,
+        Xbyak::Reg64 pointer, Pointer direct_pointer) {
+    if (use_link) {
+        code.mov(pointer, qword[r15 + link_offset]);
+        code.mov(pointer, qword[pointer]);
+    } else {
+        code.mov(pointer, mcl::bit_cast<u64>(direct_pointer));
+    }
+}
+
+template<typename Pointer>
+void EmitExclusiveMonitorElement(
+        BlockOfCode& code, bool use_link, std::size_t link_offset,
+        Xbyak::Reg64 pointer, Pointer direct_pointer, std::size_t index,
+        std::size_t element_size) {
+    if (use_link) {
+        EmitExclusiveMonitorBase(
+                code, true, link_offset, pointer, direct_pointer);
+        if (index != 0) {
+            code.add(pointer, static_cast<u32>(index * element_size));
+        }
+    } else {
+        code.mov(pointer, mcl::bit_cast<u64>(direct_pointer));
+    }
+}
+
 template<typename UserConfig>
-void EmitExclusiveLock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer, Xbyak::Reg32 tmp) {
+void EmitExclusiveLock(
+        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer,
+        Xbyak::Reg32 tmp, std::size_t lock_link_offset) {
     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
         return;
     }
 
-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
+    EmitExclusiveMonitorBase(
+            code, conf.exclusive_monitor_lock_link != nullptr,
+            lock_link_offset, pointer,
+            GetExclusiveMonitorLockPointer(conf.global_monitor));
     EmitSpinLockLock(code, pointer, tmp);
 }
 
 template<typename UserConfig>
-void EmitExclusiveUnlock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer, Xbyak::Reg32 tmp) {
+void EmitExclusiveUnlock(
+        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer,
+        Xbyak::Reg32 tmp, std::size_t lock_link_offset) {
     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
         return;
     }
 
-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
+    EmitExclusiveMonitorBase(
+            code, conf.exclusive_monitor_lock_link != nullptr,
+            lock_link_offset, pointer,
+            GetExclusiveMonitorLockPointer(conf.global_monitor));
     EmitSpinLockUnlock(code, pointer, tmp);
 }
 
 template<typename UserConfig>
-void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr, Xbyak::Reg64 pointer, Xbyak::Reg64 tmp) {
+void EmitExclusiveTestAndClear(
+        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr,
+        Xbyak::Reg64 pointer, Xbyak::Reg64 tmp,
+        std::size_t addresses_link_offset, std::size_t address_element_size) {
     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
         return;
     }
 
     code.mov(tmp, 0xDEAD'DEAD'DEAD'DEAD);
     const size_t processor_count = GetExclusiveMonitorProcessorCount(conf.global_monitor);
-    for (size_t processor_index = 0; processor_index < processor_count; processor_index++) {
-        if (processor_index == conf.processor_id) {
-            continue;
+    if (conf.exclusive_monitor_addresses_link != nullptr) {
+        EmitExclusiveMonitorBase(
+                code, true, addresses_link_offset, pointer,
+                GetExclusiveMonitorAddressPointer(conf.global_monitor, 0));
+        for (size_t processor_index = 0; processor_index < processor_count;
+             processor_index++) {
+            if (processor_index == conf.processor_id) {
+                continue;
+            }
+            Xbyak::Label ok;
+            const auto offset = static_cast<u32>(processor_index * address_element_size);
+            code.cmp(qword[pointer + offset], vaddr);
+            code.jne(ok);
+            code.mov(qword[pointer + offset], tmp);
+            code.L(ok);
         }
-        Xbyak::Label ok;
-        code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
-        code.cmp(qword[pointer], vaddr);
-        code.jne(ok);
-        code.mov(qword[pointer], tmp);
-        code.L(ok);
+    } else {
+        for (size_t processor_index = 0; processor_index < processor_count;
+             processor_index++) {
+            if (processor_index == conf.processor_id) {
+                continue;
+            }
+            Xbyak::Label ok;
+            code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
+            code.cmp(qword[pointer], vaddr);
+            code.jne(ok);
+            code.mov(qword[pointer], tmp);
+            code.L(ok);
+        }
     }
 }
 

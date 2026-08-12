@@ -37,6 +37,13 @@ namespace Dynarmic::Backend::X64 {
 
 using namespace Xbyak::util;
 
+template<auto callback>
+static ArgCallback GenRuntimeCallback(const A64::UserConfig& conf) {
+    return DevirtualizeFromLink<callback>(
+            conf.callbacks, conf.callbacks_link,
+            offsetof(A64JitState, callbacks_link));
+}
+
 A64EmitContext::A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block)
         : EmitContext(reg_alloc, block), conf(conf) {}
 
@@ -54,6 +61,17 @@ FP::FPCR A64EmitContext::FPCR(bool fpcr_controlled) const {
 
 A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_interface)
         : EmitX64(code), conf(conf), jit_interface{jit_interface} {
+    if (this->conf.fast_dispatch_table_storage) {
+        fast_dispatch_table = static_cast<FastDispatchEntry*>(this->conf.fast_dispatch_table_storage);
+    } else {
+        owned_fast_dispatch_table = std::make_unique<FastDispatchEntry[]>(fast_dispatch_table_size);
+        fast_dispatch_table = owned_fast_dispatch_table.get();
+    }
+    if (this->conf.fast_dispatch_table_link) {
+        this->conf.fast_dispatch_table_link->store(
+                reinterpret_cast<u64>(fast_dispatch_table),
+                std::memory_order_release);
+    }
     GenMemory128Accessors();
     GenFastmemFallbacks();
     GenTerminalHandlers();
@@ -169,7 +187,7 @@ void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& rang
 
 void A64EmitX64::ClearFastDispatchTable() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        fast_dispatch_table.fill({});
+        std::fill_n(fast_dispatch_table, fast_dispatch_table_size, FastDispatchEntry{});
     }
 }
 
@@ -203,6 +221,13 @@ void A64EmitX64::GenTerminalHandlers() {
         code.jne(code.GetReturnFromRunCodeAddress());
     }
     code.mov(rax, qword[r15 + offsetof(A64JitState, rsb_codeptrs) + rax * sizeof(u64)]);
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        // Linked executors do not embed per-emitter native return addresses
+        // in the RSB. Resolve the descriptor through the executor-owned fast
+        // dispatch table instead.
+        code.test(rax, rax);
+        code.jz(rsb_cache_miss);
+    }
     code.jmp(rax);
     PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a64_terminal_handler_pop_rsb_hint");
 
@@ -211,7 +236,15 @@ void A64EmitX64::GenTerminalHandlers() {
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
+        if (conf.fast_dispatch_table_link) {
+            code.mov(
+                    r12,
+                    qword[r15 +
+                          offsetof(A64JitState, fast_dispatch_table_link)]);
+            code.mov(r12, qword[r12]);
+        } else {
+            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table));
+        }
         code.mov(rbp, rbx);
         if (code.HasHostFeature(HostFeature::SSE42)) {
             code.crc32(rbp, r12);
@@ -229,8 +262,8 @@ void A64EmitX64::GenTerminalHandlers() {
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a64_terminal_handler_fast_dispatch_hint");
 
         code.align();
-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
+        fast_dispatch_table_lookup =
+                code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
         if (code.HasHostFeature(HostFeature::SSE42)) {
             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
         }
@@ -488,7 +521,7 @@ void A64EmitX64::EmitA64CallSupervisor(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ASSERT(args[0].IsImmediate());
     const u32 imm = args[0].GetImmediateU32();
-    Devirtualize<&A64::UserCallbacks::CallSVC>(conf.callbacks).EmitCall(code, [&](RegList param) {
+    GenRuntimeCallback<&A64::UserCallbacks::CallSVC>(conf).EmitCall(code, [&](RegList param) {
         code.mov(param[0], imm);
     });
     // The kernel would have to execute ERET to get here, which would clear exclusive state.
@@ -501,7 +534,7 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
     ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
     const u64 pc = args[0].GetImmediateU64();
     const u64 exception = args[1].GetImmediateU64();
-    Devirtualize<&A64::UserCallbacks::ExceptionRaised>(conf.callbacks).EmitCall(code, [&](RegList param) {
+    GenRuntimeCallback<&A64::UserCallbacks::ExceptionRaised>(conf).EmitCall(code, [&](RegList param) {
         code.mov(param[0], pc);
         code.mov(param[1], exception);
     });
@@ -510,13 +543,13 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
 void A64EmitX64::EmitA64DataCacheOperationRaised(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ctx.reg_alloc.HostCall(nullptr, {}, args[1], args[2]);
-    Devirtualize<&A64::UserCallbacks::DataCacheOperationRaised>(conf.callbacks).EmitCall(code);
+    GenRuntimeCallback<&A64::UserCallbacks::DataCacheOperationRaised>(conf).EmitCall(code);
 }
 
 void A64EmitX64::EmitA64InstructionCacheOperationRaised(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ctx.reg_alloc.HostCall(nullptr, {}, args[0], args[1]);
-    Devirtualize<&A64::UserCallbacks::InstructionCacheOperationRaised>(conf.callbacks).EmitCall(code);
+    GenRuntimeCallback<&A64::UserCallbacks::InstructionCacheOperationRaised>(conf).EmitCall(code);
 }
 
 void A64EmitX64::EmitA64DataSynchronizationBarrier(A64EmitContext&, IR::Inst*) {
@@ -534,7 +567,7 @@ void A64EmitX64::EmitA64InstructionSynchronizationBarrier(A64EmitContext& ctx, I
     }
 
     ctx.reg_alloc.HostCall(nullptr);
-    Devirtualize<&A64::UserCallbacks::InstructionSynchronizationBarrierRaised>(conf.callbacks).EmitCall(code);
+    GenRuntimeCallback<&A64::UserCallbacks::InstructionSynchronizationBarrierRaised>(conf).EmitCall(code);
 }
 
 void A64EmitX64::EmitA64GetCNTFRQ(A64EmitContext& ctx, IR::Inst* inst) {
@@ -548,7 +581,7 @@ void A64EmitX64::EmitA64GetCNTPCT(A64EmitContext& ctx, IR::Inst* inst) {
     if (!conf.wall_clock_cntpct) {
         code.UpdateTicks();
     }
-    Devirtualize<&A64::UserCallbacks::GetCNTPCT>(conf.callbacks).EmitCall(code);
+    GenRuntimeCallback<&A64::UserCallbacks::GetCNTPCT>(conf).EmitCall(code);
 }
 
 void A64EmitX64::EmitA64GetCTR(A64EmitContext& ctx, IR::Inst* inst) {
@@ -604,7 +637,7 @@ std::string A64EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescr
 
 void A64EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDescriptor, bool) {
     code.SwitchMxcsrOnExit();
-    Devirtualize<&A64::UserCallbacks::InterpreterFallback>(conf.callbacks).EmitCall(code, [&](RegList param) {
+    GenRuntimeCallback<&A64::UserCallbacks::InterpreterFallback>(conf).EmitCall(code, [&](RegList param) {
         code.mov(param[0], A64::LocationDescriptor{terminal.next}.PC());
         code.mov(qword[r15 + offsetof(A64JitState, pc)], param[0]);
         code.mov(param[1].cvt32(), terminal.num_instructions);
@@ -617,6 +650,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::ReturnToDispatch, IR::LocationDescri
 }
 
 void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
+        code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
+    }
+
     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
         code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
@@ -650,6 +688,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
 }
 
 void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
+        code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
+    }
+
     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
         code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
@@ -715,7 +758,9 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
 
 void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jg(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jg(target_code_ptr);
     } else {
         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
@@ -727,7 +772,9 @@ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jz(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jz(target_code_ptr);
     } else {
         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
@@ -739,7 +786,9 @@ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
-    if (target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        code.jmp(terminal_handler_fast_dispatch_hint);
+    } else if (target_code_ptr) {
         code.jmp(target_code_ptr);
     } else {
         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
@@ -750,6 +799,12 @@ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
 }
 
 void A64EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        const CodePtr patch_location = code.getCurr();
+        code.xor_(code.ecx, code.ecx);
+        code.EnsurePatchLocationSize(patch_location, 10);
+        return;
+    }
     if (!target_code_ptr) {
         target_code_ptr = code.GetReturnFromRunCodeAddress();
     }
@@ -762,7 +817,7 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.DisableWriting();
-        (*fast_dispatch_table_lookup)(location.Value()) = {};
+        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table) = {};
         code.EnableWriting();
     }
 }

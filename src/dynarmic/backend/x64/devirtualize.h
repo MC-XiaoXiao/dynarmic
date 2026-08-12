@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <utility>
 
@@ -75,6 +77,16 @@ ArgCallback Devirtualize(mcl::class_type<decltype(mfp)>* this_) {
 #else
     return DevirtualizeGeneric<mfp>(this_);
 #endif
+}
+
+template<auto mfp, typename CallbackObject>
+ArgCallback DevirtualizeFromLink(
+        CallbackObject* object,
+        const std::atomic<u64>* link,
+        std::size_t link_offset) {
+    auto callback = Devirtualize<mfp>(object);
+    return link ? ArgCallback::FromLink(std::move(callback), link_offset)
+                : callback;
 }
 
 }  // namespace Backend::X64

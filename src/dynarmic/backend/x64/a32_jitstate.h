@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <array>
 
 #include <mcl/stdint.hpp>
@@ -50,6 +51,10 @@ struct A32JitState {
     u32 rsb_ptr = 0;
     std::array<u64, RSBSize> rsb_location_descriptors;
     std::array<u64, RSBSize> rsb_codeptrs;
+    u64 stable_link_hits = 0;
+    u64 stable_link_misses = 0;
+    u64 rsb_hits = 0;
+    u64 rsb_misses = 0;
     void ResetRSB();
 
     u32 fpsr_exc = 0;
@@ -57,6 +62,38 @@ struct A32JitState {
     u32 fpsr_nzcv = 0;
     u32 Fpscr() const;
     void SetFpscr(u32 FPSCR);
+
+    // Runtime-owned indirection. Generated code loads the current callback
+    // owner through this link instead of embedding an executor-specific
+    // UserCallbacks address.
+    const std::atomic<u64>* callbacks_link = nullptr;
+
+    // Runtime-owned indirection for the dispatcher lookup callback's opaque
+    // executor argument.
+    const std::atomic<u64>* lookup_link = nullptr;
+
+    // Runtime-owned indirection for the backend-owned UserConfig used by
+    // generated helper calls.
+    const std::atomic<u64>* runtime_config_link = nullptr;
+
+    // Runtime-owned indirection for the mutable fast-dispatch table used by
+    // terminal handlers.
+    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
+
+    // Runtime-owned page-table bases loaded by the run prelude. These links
+    // keep generated code independent of an executor's AddressSpace object.
+    const std::atomic<u64>* page_table_link = nullptr;
+    const std::atomic<u64>* read_page_table_link = nullptr;
+
+    // Optional runtime owner for Coprocessor::Callback user arguments.
+    const std::atomic<u64>* coprocessor_user_arg_link = nullptr;
+
+    // Runtime-owned exclusive monitor bases used by fast exclusive-memory
+    // sequences. Keeping these in link cells makes emitted code independent of
+    // the executor's monitor allocation.
+    const std::atomic<u64>* exclusive_monitor_lock_link = nullptr;
+    const std::atomic<u64>* exclusive_monitor_addresses_link = nullptr;
+    const std::atomic<u64>* exclusive_monitor_values_link = nullptr;
 
     u64 GetUniqueHash() const noexcept {
         return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));

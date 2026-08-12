@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -95,6 +96,11 @@ struct UserCallbacks {
     virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
     virtual Vector MemoryRead128(VAddr vaddr) = 0;
 
+    // Called immediately before an exclusive load establishes its monitor
+    // reservation. This is separate from MemoryRead* so a memory backend can
+    // revoke a direct-write alias before the following ordinary store.
+    virtual void MemoryReadExclusive(VAddr /*vaddr*/, std::size_t /*size*/) {}
+
     // Writes through these callbacks may not be aligned.
     virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
     virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
@@ -137,6 +143,41 @@ struct UserCallbacks {
 
 struct UserConfig {
     UserCallbacks* callbacks;
+
+    // Optional executor-owned indirection for generated host callbacks.
+    // The link must remain alive for the Jit and contain a UserCallbacks*
+    // compatible with callbacks. Backends that do not support it continue to
+    // embed callbacks directly.
+    const std::atomic<std::uint64_t>* callbacks_link = nullptr;
+
+    // Optional executor-owned indirection for the dispatcher lookup callback.
+    // The target is the lookup callback's opaque argument and remains valid
+    // for the Jit lifetime.
+    std::atomic<std::uint64_t>* lookup_link = nullptr;
+
+    // Optional executor-owned indirection for the backend-owned runtime
+    // configuration. The backend publishes its stable UserConfig address into
+    // this cell, allowing generated helpers to avoid embedding that address.
+    std::atomic<std::uint64_t>* runtime_config_link = nullptr;
+
+    // Optional executor-owned indirection for the mutable fast-dispatch table
+    // used by terminal handlers. The backend publishes its table address into
+    // this cell after constructing the emitter.
+    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
+
+    // Optional backend-owned storage for the mutable fast-dispatch table.
+    // When supplied, the x64 backend uses this address instead of embedding
+    // the table in its emitter object. The caller must keep the storage alive
+    // for the Jit lifetime and provide fast_dispatch_table_size entries in
+    // the backend's FastDispatchEntry layout.
+    void* fast_dispatch_table_storage = nullptr;
+
+    // Optional executor-owned indirection for the global exclusive monitor's
+    // lock and reservation arrays. Fast exclusive-memory code loads these
+    // bases through the active JitState instead of embedding host pointers.
+    const std::atomic<std::uint64_t>* exclusive_monitor_lock_link = nullptr;
+    const std::atomic<std::uint64_t>* exclusive_monitor_addresses_link = nullptr;
+    const std::atomic<std::uint64_t>* exclusive_monitor_values_link = nullptr;
 
     size_t processor_id = 0;
     ExclusiveMonitor* global_monitor = nullptr;
