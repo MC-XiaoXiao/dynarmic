@@ -25,12 +25,16 @@ namespace A32 {
 class Jit;
 
 struct DispatchCounters {
+    // Deprecated aggregate counters retained for source/ABI compatibility.
+    std::uint64_t stable_link_hits{};
+    std::uint64_t stable_link_misses{};
+    std::uint64_t rsb_hits{};
+    std::uint64_t rsb_misses{};
+    // Independent counters for the shared-table fast path.
     std::uint64_t fast_link_hits{};
     std::uint64_t fast_link_misses{};
     std::uint64_t stable_table_probes{};
     std::uint64_t stable_table_collisions{};
-    std::uint64_t rsb_hits{};
-    std::uint64_t rsb_misses{};
 };
 
 class NativeCodeSlab final {

@@ -1344,10 +1344,12 @@ void A32EmitX64::EmitStableLink(
     code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
     code.test(rax, rax);
     code.jz(miss, code.T_NEAR);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
     code.inc(qword[r15 + offsetof(A32JitState, fast_link_hits)]);
     code.jmp(rax);
 
     code.L(miss);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
     code.inc(qword[r15 + offsetof(A32JitState, fast_link_misses)]);
     code.jmp(terminal_handler_fast_dispatch_hint);
 }
@@ -1393,6 +1395,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
     code.mov(qword[r15 + index_reg * sizeof(u64) +
                      offsetof(A32JitState, rsb_codeptrs)],
              rcx);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
     code.jmp(done, code.T_NEAR);
 
     code.L(miss);
@@ -1400,6 +1403,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
     code.mov(qword[r15 + index_reg * sizeof(u64) +
                      offsetof(A32JitState, rsb_codeptrs)],
              rcx);
+    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
 
     code.L(done);
     code.add(index_reg.cvt32(), 1);

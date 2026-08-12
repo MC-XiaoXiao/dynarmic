@@ -51,12 +51,16 @@ struct A32JitState {
     u32 rsb_ptr = 0;
     std::array<u64, RSBSize> rsb_location_descriptors;
     std::array<u64, RSBSize> rsb_codeptrs;
+    // Legacy aggregate counters retained for source/ABI compatibility.
+    u64 stable_link_hits = 0;
+    u64 stable_link_misses = 0;
+    u64 rsb_hits = 0;
+    u64 rsb_misses = 0;
+    // New counters keep direct fast-link probes separate from RSB activity.
     u64 fast_link_hits = 0;
     u64 fast_link_misses = 0;
     u64 stable_table_probes = 0;
     u64 stable_table_collisions = 0;
-    u64 rsb_hits = 0;
-    u64 rsb_misses = 0;
     void ResetRSB();
 
     u32 fpsr_exc = 0;
