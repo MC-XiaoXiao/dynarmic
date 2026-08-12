@@ -85,16 +85,6 @@ void EmitIR<IR::Opcode::A32WriteMemory64>(oaknut::CodeGenerator& code, EmitConte
 }
 
 template<>
-void EmitIR<IR::Opcode::A32SwapMemory8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
-    EmitSwapMemory<8>(code, ctx, inst);
-}
-
-template<>
-void EmitIR<IR::Opcode::A32SwapMemory32>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
-    EmitSwapMemory<32>(code, ctx, inst);
-}
-
-template<>
 void EmitIR<IR::Opcode::A32ExclusiveWriteMemory8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     EmitExclusiveWriteMemory<8>(code, ctx, inst);
 }

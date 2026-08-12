@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <array>
 
 #include <mcl/stdint.hpp>
@@ -68,27 +67,6 @@ struct A64JitState {
     u32 GetFpsr() const;
     void SetFpcr(u32 value);
     void SetFpsr(u32 value);
-
-    // Runtime-owned indirection for callbacks used by generated code.
-    const std::atomic<u64>* callbacks_link = nullptr;
-
-    // Runtime-owned indirection for the dispatcher lookup callback argument.
-    const std::atomic<u64>* lookup_link = nullptr;
-
-    // Runtime-owned indirection for the backend-owned UserConfig used by
-    // generated helper calls.
-    const std::atomic<u64>* runtime_config_link = nullptr;
-
-    // Runtime-owned indirection for the mutable fast-dispatch table used by
-    // terminal handlers.
-    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
-
-    // Runtime-owned exclusive monitor bases used by fast exclusive-memory
-    // sequences. Keeping these in link cells makes emitted code independent of
-    // the executor's monitor allocation.
-    const std::atomic<u64>* exclusive_monitor_lock_link = nullptr;
-    const std::atomic<u64>* exclusive_monitor_addresses_link = nullptr;
-    const std::atomic<u64>* exclusive_monitor_values_link = nullptr;
 
     u64 GetUniqueHash() const noexcept {
         const u64 fpcr_u64 = static_cast<u64>(fpcr & A64::LocationDescriptor::fpcr_mask) << A64::LocationDescriptor::fpcr_shift;

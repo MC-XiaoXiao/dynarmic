@@ -63,8 +63,6 @@ enum class LinkTarget {
     WriteMemory32,
     WriteMemory64,
     WriteMemory128,
-    SwapMemory8,
-    SwapMemory32,
     WrappedWriteMemory8,
     WrappedWriteMemory16,
     WrappedWriteMemory32,
@@ -126,7 +124,6 @@ struct EmitConfig {
 
     // Page table
     u64 page_table_pointer;
-    u64 read_page_table_pointer;
     size_t page_table_address_space_bits;
     int page_table_pointer_mask_bits;
     bool silently_mirror_page_table;

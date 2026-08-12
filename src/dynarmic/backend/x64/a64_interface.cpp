@@ -6,7 +6,6 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <utility>
 
 #include <boost/icl/interval_set.hpp>
 #include <mcl/assert.hpp>
@@ -29,29 +28,11 @@ namespace Dynarmic::A64 {
 
 using namespace Backend::X64;
 
-template<auto callback>
-static std::unique_ptr<Callback> GenRuntimeCallback(
-        A64::UserCallbacks* cb, const A64::UserConfig& conf) {
-    auto direct = Devirtualize<callback>(cb);
-    if (conf.callbacks_link) {
-        return std::make_unique<ArgCallbackFromLink>(
-                std::move(direct), offsetof(A64JitState, callbacks_link));
-    }
-    return std::make_unique<ArgCallback>(std::move(direct));
-}
-
 static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*LookupBlock)(void* lookup_block_arg), void* arg, const A64::UserConfig& conf) {
-    std::unique_ptr<Callback> lookup = std::make_unique<ArgCallback>(
-            LookupBlock, reinterpret_cast<u64>(arg));
-    if (conf.lookup_link) {
-        lookup = std::make_unique<ArgCallbackFromLink>(
-                ArgCallback{LookupBlock, 0},
-                offsetof(A64JitState, lookup_link));
-    }
     return RunCodeCallbacks{
-        std::move(lookup),
-        GenRuntimeCallback<&A64::UserCallbacks::AddTicks>(cb, conf),
-        GenRuntimeCallback<&A64::UserCallbacks::GetTicksRemaining>(cb, conf),
+        std::make_unique<ArgCallback>(LookupBlock, reinterpret_cast<u64>(arg)),
+        std::make_unique<ArgCallback>(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
+        std::make_unique<ArgCallback>(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
         conf.enable_cycle_counting,
     };
 }
@@ -74,31 +55,14 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
     };
 }
 
-static A64::UserConfig WithFastDispatchTable(A64::UserConfig conf, void* storage) {
-    conf.fast_dispatch_table_storage = storage;
-    return conf;
-}
-
 struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
             : conf(conf)
-            , fast_dispatch_table_storage(std::make_unique<A64EmitX64::FastDispatchEntry[]>(A64EmitX64::fast_dispatch_table_size))
             , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
-            , emitter(block_of_code, WithFastDispatchTable(conf, fast_dispatch_table_storage.get()), jit)
+            , emitter(block_of_code, conf, jit)
             , polyfill_options(GenPolyfillOptions(block_of_code)) {
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
-        if (this->conf.lookup_link) {
-            this->conf.lookup_link->store(
-                    reinterpret_cast<u64>(this),
-                    std::memory_order_release);
-        }
-        if (this->conf.runtime_config_link) {
-            this->conf.runtime_config_link->store(
-                    reinterpret_cast<u64>(&this->conf),
-                    std::memory_order_release);
-        }
-        BindExecutionContext();
     }
 
     ~Impl() = default;
@@ -117,8 +81,7 @@ public:
         const CodePtr current_code_ptr = [this] {
             // RSB optimization
             const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSBPtrMask;
-            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr] &&
-                jit_state.rsb_codeptrs[new_rsb_ptr] != 0) {
+            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
                 jit_state.rsb_ptr = new_rsb_ptr;
                 return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
             }
@@ -166,7 +129,6 @@ public:
     void Reset() {
         ASSERT(!is_executing);
         jit_state = {};
-        BindExecutionContext();
     }
 
     void HaltExecution(HaltReason hr) {
@@ -277,19 +239,6 @@ public:
     }
 
 private:
-    void BindExecutionContext() {
-        jit_state.callbacks_link = conf.callbacks_link;
-        jit_state.lookup_link = conf.lookup_link;
-        jit_state.runtime_config_link = conf.runtime_config_link;
-        jit_state.fast_dispatch_table_link = conf.fast_dispatch_table_link;
-        jit_state.exclusive_monitor_lock_link =
-                conf.exclusive_monitor_lock_link;
-        jit_state.exclusive_monitor_addresses_link =
-                conf.exclusive_monitor_addresses_link;
-        jit_state.exclusive_monitor_values_link =
-                conf.exclusive_monitor_values_link;
-    }
-
     static CodePtr GetCurrentBlockThunk(void* thisptr) {
         Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
         return this_->GetCurrentBlock();
@@ -366,7 +315,6 @@ private:
     bool is_executing = false;
 
     const UserConfig conf;
-    std::unique_ptr<A64EmitX64::FastDispatchEntry[]> fast_dispatch_table_storage;
     A64JitState jit_state;
     BlockOfCode block_of_code;
     A64EmitX64 emitter;

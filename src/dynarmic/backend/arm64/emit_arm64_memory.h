@@ -27,8 +27,6 @@ void EmitExclusiveReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::
 template<size_t bitsize>
 void EmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
 template<size_t bitsize>
-void EmitSwapMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
-template<size_t bitsize>
 void EmitExclusiveWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
 
 }  // namespace Dynarmic::Backend::Arm64

@@ -6,7 +6,6 @@
 #pragma once
 
 #include <array>
-#include <memory>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -52,9 +51,11 @@ public:
 
     void InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges);
 
-    // The dispatch table is mutable executor state. Keep its representation
-    // public so a Jit implementation can own it independently of generated
-    // code and emitter metadata.
+protected:
+    const A64::UserConfig conf;
+    A64::Jit* jit_interface;
+    BlockRangeInformation<u64> block_ranges;
+
     struct FastDispatchEntry {
         u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
         const void* code_ptr = nullptr;
@@ -62,14 +63,7 @@ public:
     static_assert(sizeof(FastDispatchEntry) == 0x10);
     static constexpr u64 fast_dispatch_table_mask = 0xFFFFF0;
     static constexpr size_t fast_dispatch_table_size = 0x100000;
-
-protected:
-    const A64::UserConfig conf;
-    A64::Jit* jit_interface;
-    BlockRangeInformation<u64> block_ranges;
-
-    std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
-    FastDispatchEntry* fast_dispatch_table = nullptr;
+    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
     void ClearFastDispatchTable();
 
     void (*memory_read_128)();
@@ -84,7 +78,7 @@ protected:
 
     const void* terminal_handler_pop_rsb_hint;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
+    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
     void GenTerminalHandlers();
 
     // Microinstruction emitters
