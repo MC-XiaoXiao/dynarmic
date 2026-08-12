@@ -42,6 +42,13 @@ struct A32EmitContext final : public EmitContext {
 
 class A32EmitX64 final : public EmitX64 {
 public:
+    struct CacheStats {
+        std::size_t range_count{};
+        std::size_t descriptor_count{};
+        std::uint64_t invalidated_descriptors{};
+        std::uint64_t retired_code_bytes{};
+    };
+
     A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface);
     ~A32EmitX64() override;
 
@@ -55,6 +62,8 @@ public:
 
     tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(
         const boost::icl::interval_set<u32>& ranges);
+
+    [[nodiscard]] CacheStats GetCacheStats() const noexcept;
 
     // The dispatch table is mutable executor state. Keep its representation
     // public so a Jit implementation can own it independently of generated
@@ -79,6 +88,7 @@ protected:
     const A32::UserConfig conf;
     A32::Jit* jit_interface;
     BlockRangeInformation<u32> block_ranges;
+    std::uint64_t retired_code_bytes{};
 
     void EmitCondPrelude(const A32EmitContext& ctx);
 

@@ -426,6 +426,20 @@ struct NativeCodeSlab::Impl {
                reinterpret_cast<const char*>(block_of_code->GetCodeBegin());
     }
 
+    [[nodiscard]] NativeCodeSlab::CacheStats GetCacheStats() const {
+        std::lock_guard lock{mutex};
+        if (!initialized) {
+            return {};
+        }
+        const auto stats = emitter->GetCacheStats();
+        return NativeCodeSlab::CacheStats{
+            stats.range_count,
+            stats.descriptor_count,
+            stats.invalidated_descriptors,
+            stats.retired_code_bytes,
+        };
+    }
+
     void dump_disassembly() const {
         std::lock_guard lock{mutex};
         const auto size = reinterpret_cast<const char*>(block_of_code->getCurr()) -
@@ -591,6 +605,10 @@ const void* NativeCodeSlab::return_from_run_code() const {
 
 std::size_t NativeCodeSlab::code_cache_used() const {
     return impl->code_cache_used();
+}
+
+NativeCodeSlab::CacheStats NativeCodeSlab::GetCacheStats() const {
+    return impl->GetCacheStats();
 }
 
 void NativeCodeSlab::dump_disassembly() const {

@@ -199,6 +199,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
 void A32EmitX64::ClearCache() {
     EmitX64::ClearCache();
     block_ranges.ClearCache();
+    retired_code_bytes = 0;
     ClearFastDispatchTable();
     fastmem_patch_info.clear();
 }
@@ -206,6 +207,11 @@ void A32EmitX64::ClearCache() {
 tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
     const boost::icl::interval_set<u32>& ranges) {
     const auto locations = block_ranges.InvalidateRanges(ranges);
+    for (const auto& location : locations) {
+        if (const auto block = GetBasicBlock(location)) {
+            retired_code_bytes += static_cast<std::uint64_t>(block->size);
+        }
+    }
     if (conf.fast_dispatch_table_link &&
         conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         // Shared blocks are immutable. Remove only their descriptors and
@@ -219,6 +225,16 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
         InvalidateBasicBlocks(locations);
     }
     return locations;
+}
+
+A32EmitX64::CacheStats A32EmitX64::GetCacheStats() const noexcept {
+    const auto range_stats = block_ranges.GetStats();
+    return CacheStats{
+        range_stats.range_count,
+        range_stats.descriptor_count,
+        range_stats.invalidated_descriptors,
+        retired_code_bytes,
+    };
 }
 
 void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {

@@ -33,6 +33,13 @@ struct DispatchCounters {
 
 class NativeCodeSlab final {
 public:
+    struct CacheStats {
+        std::size_t range_count{};
+        std::size_t descriptor_count{};
+        std::uint64_t invalidated_descriptors{};
+        std::uint64_t retired_code_bytes{};
+    };
+
     struct BlockDescriptor {
         const void* entrypoint{};
         std::size_t size{};
@@ -75,6 +82,7 @@ public:
                                        const void* code_ptr) const;
     [[nodiscard]] const void* return_from_run_code() const;
     [[nodiscard]] std::size_t code_cache_used() const;
+    [[nodiscard]] CacheStats GetCacheStats() const;
     void dump_disassembly() const;
     [[nodiscard]] std::vector<std::string> disassemble() const;
     [[nodiscard]] bool has_host_feature_sha() const;
