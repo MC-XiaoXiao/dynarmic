@@ -75,12 +75,17 @@ public:
     static_assert(sizeof(FastDispatchEntry) == 0x10);
     static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
     static constexpr size_t fast_dispatch_table_size = 0x10000;
+    static constexpr u32 fast_dispatch_table_address_shift = 2;
     // Keep the slot selection deterministic and independent of the
     // executor-local table address. Shared generated blocks can therefore
     // embed this slot offset and probe it without entering the full handler.
+    // A table entry is 16 bytes while an ARM instruction is four-byte
+    // aligned: shift the mixed descriptor before applying the byte-offset
+    // mask so adjacent ARM basic blocks do not alias the same slot.
     [[nodiscard]] static constexpr u64 fast_dispatch_table_index(
         u64 location_descriptor) noexcept {
-        return (location_descriptor ^ (location_descriptor >> 32U)) &
+        return ((location_descriptor ^ (location_descriptor >> 32U)) <<
+                fast_dispatch_table_address_shift) &
                fast_dispatch_table_mask;
     }
 

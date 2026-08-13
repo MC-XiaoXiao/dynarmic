@@ -314,6 +314,7 @@ void A32EmitX64::GenTerminalHandlers() {
         code.mov(rbp, rbx);
         code.shr(rbp, 32);
         code.xor_(rbp, rbx);
+        code.shl(rbp, fast_dispatch_table_address_shift);
         code.and_(ebp, fast_dispatch_table_mask);
         code.lea(rbp, ptr[r12 + rbp]);
         code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
@@ -332,6 +333,7 @@ void A32EmitX64::GenTerminalHandlers() {
         code.mov(code.ABI_RETURN, code.ABI_PARAM1);
         code.shr(code.ABI_RETURN, 32);
         code.xor_(code.ABI_RETURN, code.ABI_PARAM1);
+        code.shl(code.ABI_RETURN, fast_dispatch_table_address_shift);
         code.and_(code.ABI_RETURN.cvt32(), fast_dispatch_table_mask);
         code.lea(code.ABI_RETURN,
                  code.ptr[code.ABI_RETURN + code.ABI_PARAM2]);
