@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 
 #include <dynarmic/common/spin_lock.h>
@@ -55,7 +57,9 @@ public:
             ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
 
         Lock();
+        RemoveReservation(processor_id);
         exclusive_addresses[processor_id] = masked_address;
+        AddReservation(processor_id, masked_address);
         const T value = op();
         std::memcpy(exclusive_values[processor_id].data(), &value, sizeof(T));
         Unlock();
@@ -87,6 +91,49 @@ public:
     void ClearProcessor(size_t processor_id);
 
 private:
+    static constexpr size_t INVALID_PROCESSOR_ID =
+        std::numeric_limits<size_t>::max();
+
+    void AddReservation(size_t processor_id, VAddr address) {
+        const auto [it, inserted] =
+            reservation_heads.try_emplace(address, processor_id);
+        reservation_previous[processor_id] = INVALID_PROCESSOR_ID;
+        if (inserted) {
+            reservation_next[processor_id] = INVALID_PROCESSOR_ID;
+            return;
+        }
+
+        const auto previous_head = it->second;
+        reservation_next[processor_id] = previous_head;
+        reservation_previous[previous_head] = processor_id;
+        it->second = processor_id;
+    }
+
+    void RemoveReservation(size_t processor_id) {
+        const auto address = exclusive_addresses[processor_id];
+        if (address == INVALID_EXCLUSIVE_ADDRESS) return;
+
+        const auto previous = reservation_previous[processor_id];
+        const auto next = reservation_next[processor_id];
+        if (previous == INVALID_PROCESSOR_ID) {
+            const auto it = reservation_heads.find(address);
+            if (it != reservation_heads.end()) {
+                if (next == INVALID_PROCESSOR_ID) {
+                    reservation_heads.erase(it);
+                } else {
+                    it->second = next;
+                }
+            }
+        } else {
+            reservation_next[previous] = next;
+        }
+        if (next != INVALID_PROCESSOR_ID) {
+            reservation_previous[next] = previous;
+        }
+        reservation_previous[processor_id] = INVALID_PROCESSOR_ID;
+        reservation_next[processor_id] = INVALID_PROCESSOR_ID;
+    }
+
     bool CheckAndClear(size_t processor_id, VAddr address);
 
     [[nodiscard]] VAddr ResolveAddress(
@@ -114,6 +161,9 @@ private:
     std::atomic<void*> address_resolver_context{nullptr};
     std::vector<VAddr> exclusive_addresses;
     std::vector<Vector> exclusive_values;
+    std::vector<size_t> reservation_previous;
+    std::vector<size_t> reservation_next;
+    std::unordered_map<VAddr, size_t> reservation_heads;
 };
 
 }  // namespace Dynarmic
