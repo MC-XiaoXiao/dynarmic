@@ -795,6 +795,12 @@ struct Jit::Impl {
         return native_code_slab->emit(block, generation).newly_emitted;
     }
 
+    void SetPortableIRDemandProvider(
+            PortableIRDemandProvider provider, void* user_arg) noexcept {
+        portable_ir_demand_provider = provider;
+        portable_ir_demand_provider_arg = user_arg;
+    }
+
     void ClearCache() {
         std::unique_lock lock{invalidation_mutex};
         invalidate_entire_cache = true;
@@ -951,6 +957,26 @@ private:
         native_code_slab->ensure_memory_committed(
             MINIMUM_REMAINING_CODESIZE);
 
+        // This is deliberately after the NativeCodeSlab lookup and before
+        // demand translation. The provider is an optional, prevalidated
+        // artifact hand-off; it must not perform store/disk work here.
+        if (portable_ir_demand_provider != nullptr) {
+            if (auto* const artifact = portable_ir_demand_provider(
+                        portable_ir_demand_provider_arg, descriptor.Value(),
+                        generation);
+                artifact != nullptr &&
+                artifact->Location().Value() == descriptor.Value()) {
+                IR::Block ir_block = std::move(*artifact);
+                auto emitted = native_code_slab->emit(ir_block, generation);
+                if (emitted.entrypoint == nullptr) {
+                    return NativeCodeSlab::BlockDescriptor{
+                        native_code_slab->return_from_run_code(), 0,
+                        generation};
+                }
+                return emitted;
+            }
+        }
+
         IR::Block ir_block = TranslateBlock(descriptor);
         auto emitted = native_code_slab->emit(ir_block, generation);
         if (emitted.entrypoint == nullptr) {
@@ -1041,6 +1067,9 @@ private:
 
     Jit* jit_interface;
 
+    PortableIRDemandProvider portable_ir_demand_provider{};
+    void* portable_ir_demand_provider_arg{};
+
     // Requests made during execution to invalidate the cache are queued up here.
     bool invalidate_entire_cache = false;
     boost::icl::interval_set<u32> invalid_cache_ranges;
@@ -1070,6 +1099,11 @@ void Jit::GeneratePortableIR(std::uint64_t location_descriptor) {
 
 bool Jit::Precompile(IR::Block block) {
     return impl->Precompile(std::move(block));
+}
+
+void Jit::SetPortableIRDemandProvider(
+        PortableIRDemandProvider provider, void* user_arg) {
+    impl->SetPortableIRDemandProvider(provider, user_arg);
 }
 
 void Jit::ClearCache() {

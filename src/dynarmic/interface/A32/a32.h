@@ -104,6 +104,14 @@ private:
 
 class Jit final {
 public:
+    // Optional host-side source for a previously validated portable IR block.
+    // Dynarmic calls this only after a NativeCodeSlab miss and consumes the
+    // returned block while emitting native code. The provider must not do
+    // I/O, acquire locks, allocate, or scan; it may return nullptr.
+    using PortableIRDemandProvider = IR::Block* (*)(
+            void* user_arg, std::uint64_t location_descriptor,
+            std::uint64_t slab_generation) noexcept;
+
     explicit Jit(UserConfig conf);
     ~Jit();
 
@@ -140,6 +148,14 @@ public:
      * is false when the location was already compiled.
      */
     bool Precompile(IR::Block block);
+
+    /**
+     * Installs an optional provider consumed at the true NativeCodeSlab miss.
+     * The provider and user argument must remain valid until the Jit is
+     * destroyed or another provider is installed.
+     */
+    void SetPortableIRDemandProvider(PortableIRDemandProvider provider,
+                                     void* user_arg);
 
     /**
      * Clears the code cache of all compiled code.
