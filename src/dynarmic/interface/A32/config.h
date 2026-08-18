@@ -164,6 +164,14 @@ struct UserCallbacks : public TranslateCallbacks {
 struct UserConfig {
     UserCallbacks* callbacks;
 
+    // Optional observer called when an executing Jit resolves a location to
+    // an already-emitted native block in the shared slab. It is deliberately
+    // absent from generated code and is only used for host-side diagnostics.
+    using NativeCodeBlockLookupCallback = void (*)(
+        void* user_arg, std::uint64_t location_descriptor) noexcept;
+    NativeCodeBlockLookupCallback native_code_block_lookup_callback = nullptr;
+    void* native_code_block_lookup_callback_arg = nullptr;
+
     // Optional shared immutable native-code slab. The first Jit using a slab
     // initializes its host prelude and emitter; later Jits reuse published
     // blocks while retaining executor-local state and dispatch tables.

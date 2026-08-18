@@ -933,6 +933,12 @@ private:
         NativeCodeSlab::BlockDescriptor block;
         if (native_code_slab->find_block(
                 descriptor.Value(), generation, block)) {
+            if (jit_interface->is_executing &&
+                conf.native_code_block_lookup_callback != nullptr) {
+                conf.native_code_block_lookup_callback(
+                    conf.native_code_block_lookup_callback_arg,
+                    descriptor.Value());
+            }
             return block;
         }
 
