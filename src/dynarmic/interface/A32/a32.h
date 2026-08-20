@@ -66,6 +66,10 @@ public:
                     const void* (*lookup)(void*), void* lookup_arg,
                     bool shared_mode);
     [[nodiscard]] std::uint64_t generation() const;
+    // Lock-free observation for executor-side cache probes. It may lag a
+    // requested invalidation until that transition is safe to publish, but it
+    // never waits for an active executor.
+    [[nodiscard]] std::uint64_t generation_snapshot() const noexcept;
     [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
                                   std::uint64_t expected_generation,
                                   BlockDescriptor& result) const;

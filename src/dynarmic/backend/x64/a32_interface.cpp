@@ -198,6 +198,10 @@ struct NativeCodeSlab::Impl {
         return current_generation;
     }
 
+    [[nodiscard]] std::uint64_t generation_snapshot() const noexcept {
+        return published_generation.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
                                   std::uint64_t expected_generation,
                                   BlockDescriptor& result) const {
@@ -332,6 +336,8 @@ struct NativeCodeSlab::Impl {
             block_of_code->ClearCache();
             pending_ranges.clear();
             current_generation = pending_generation;
+            published_generation.store(current_generation,
+                                       std::memory_order_release);
             clear_pending = false;
             generation_changed.notify_all();
             return;
@@ -516,6 +522,7 @@ struct NativeCodeSlab::Impl {
     std::size_t code_cache_size{};
     std::size_t active_executions{};
     std::uint64_t current_generation{1};
+    std::atomic<std::uint64_t> published_generation{1};
     std::uint64_t pending_generation{1};
     boost::icl::interval_set<u32> pending_ranges;
     bool initialized{};
@@ -537,6 +544,10 @@ void NativeCodeSlab::initialize(
 
 std::uint64_t NativeCodeSlab::generation() const {
     return impl->generation();
+}
+
+std::uint64_t NativeCodeSlab::generation_snapshot() const noexcept {
+    return impl->generation_snapshot();
 }
 
 bool NativeCodeSlab::find_block(
