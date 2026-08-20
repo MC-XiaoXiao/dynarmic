@@ -785,14 +785,14 @@ struct Jit::Impl {
                 descriptor.Value(), translation_nanoseconds, ir_block);
     }
 
-    bool Precompile(IR::Block block) {
+    PortableIREmitOutcome PrecompileWithResult(IR::Block block) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         NativeCodeSlab::BlockDescriptor existing;
-        const auto generation = native_code_slab->generation();
+        auto generation = native_code_slab->generation();
         if (native_code_slab->find_block(
                 block.Location().Value(), generation, existing)) {
-            return false;
+            return PortableIREmitOutcome::AlreadyPresent;
         }
 
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
@@ -800,16 +800,34 @@ struct Jit::Impl {
             MINIMUM_REMAINING_CODESIZE) {
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            generation = native_code_slab->generation();
         }
         native_code_slab->ensure_memory_committed(
             MINIMUM_REMAINING_CODESIZE);
-        return native_code_slab->emit(block, generation).newly_emitted;
+        const auto emitted = native_code_slab->emit(block, generation);
+        if (emitted.entrypoint == nullptr) {
+            return PortableIREmitOutcome::EmitFailed;
+        }
+        return emitted.newly_emitted
+                     ? PortableIREmitOutcome::NativeEmitted
+                     : PortableIREmitOutcome::AlreadyPresent;
+    }
+
+    bool Precompile(IR::Block block) {
+        return PrecompileWithResult(std::move(block)) ==
+               PortableIREmitOutcome::NativeEmitted;
     }
 
     void SetPortableIRDemandProvider(
             PortableIRDemandProvider provider, void* user_arg) noexcept {
         portable_ir_demand_provider = provider;
         portable_ir_demand_provider_arg = user_arg;
+    }
+
+    void SetPortableIREmitCompletion(
+            PortableIREmitCompletion completion, void* user_arg) noexcept {
+        portable_ir_emit_completion = completion;
+        portable_ir_emit_completion_arg = user_arg;
     }
 
     void ClearCache() {
@@ -981,16 +999,35 @@ private:
             if (auto* const artifact = portable_ir_demand_provider(
                         portable_ir_demand_provider_arg, descriptor.Value(),
                         generation);
-                artifact != nullptr &&
-                artifact->Location().Value() == descriptor.Value()) {
+                artifact != nullptr) {
+                if (artifact->Location().Value() != descriptor.Value()) {
+                    if (portable_ir_emit_completion != nullptr) {
+                        portable_ir_emit_completion(
+                                portable_ir_emit_completion_arg,
+                                descriptor.Value(), generation,
+                                PortableIREmitOutcome::EmitFailed);
+                    }
+                } else {
                 IR::Block ir_block = std::move(*artifact);
                 auto emitted = native_code_slab->emit(ir_block, generation);
+                const auto outcome =
+                        emitted.entrypoint == nullptr
+                          ? PortableIREmitOutcome::EmitFailed
+                          : (emitted.newly_emitted
+                               ? PortableIREmitOutcome::NativeEmitted
+                               : PortableIREmitOutcome::AlreadyPresent);
+                if (portable_ir_emit_completion != nullptr) {
+                    portable_ir_emit_completion(
+                            portable_ir_emit_completion_arg,
+                            descriptor.Value(), generation, outcome);
+                }
                 if (emitted.entrypoint == nullptr) {
                     return NativeCodeSlab::BlockDescriptor{
                         native_code_slab->return_from_run_code(), 0,
                         generation};
                 }
                 return emitted;
+                }
             }
         }
 
@@ -1086,6 +1123,8 @@ private:
 
     PortableIRDemandProvider portable_ir_demand_provider{};
     void* portable_ir_demand_provider_arg{};
+    PortableIREmitCompletion portable_ir_emit_completion{};
+    void* portable_ir_emit_completion_arg{};
 
     // Requests made during execution to invalidate the cache are queued up here.
     bool invalidate_entire_cache = false;
@@ -1118,9 +1157,18 @@ bool Jit::Precompile(IR::Block block) {
     return impl->Precompile(std::move(block));
 }
 
+Jit::PortableIREmitOutcome Jit::PrecompileWithResult(IR::Block block) {
+    return impl->PrecompileWithResult(std::move(block));
+}
+
 void Jit::SetPortableIRDemandProvider(
         PortableIRDemandProvider provider, void* user_arg) {
     impl->SetPortableIRDemandProvider(provider, user_arg);
+}
+
+void Jit::SetPortableIREmitCompletion(
+        PortableIREmitCompletion completion, void* user_arg) {
+    impl->SetPortableIREmitCompletion(completion, user_arg);
 }
 
 void Jit::ClearCache() {

@@ -108,6 +108,12 @@ private:
 
 class Jit final {
 public:
+    enum class PortableIREmitOutcome : std::uint8_t {
+        NativeEmitted,
+        AlreadyPresent,
+        EmitFailed,
+    };
+
     // Optional host-side source for a previously validated portable IR block.
     // Dynarmic calls this only after a NativeCodeSlab miss and consumes the
     // returned block while emitting native code. The provider must not do
@@ -115,6 +121,10 @@ public:
     using PortableIRDemandProvider = IR::Block* (*)(
             void* user_arg, std::uint64_t location_descriptor,
             std::uint64_t slab_generation) noexcept;
+    using PortableIREmitCompletion = void (*)(
+            void* user_arg, std::uint64_t location_descriptor,
+            std::uint64_t slab_generation,
+            PortableIREmitOutcome outcome) noexcept;
 
     explicit Jit(UserConfig conf);
     ~Jit();
@@ -154,11 +164,24 @@ public:
     bool Precompile(IR::Block block);
 
     /**
+     * Emits a previously optimized IR block and reports whether this call
+     * emitted native code, found an existing block, or failed to emit.
+     */
+    PortableIREmitOutcome PrecompileWithResult(IR::Block block);
+
+    /**
      * Installs an optional provider consumed at the true NativeCodeSlab miss.
      * The provider and user argument must remain valid until the Jit is
      * destroyed or another provider is installed.
      */
     void SetPortableIRDemandProvider(PortableIRDemandProvider provider,
+                                     void* user_arg);
+
+    /**
+     * Installs an optional completion callback for provider-supplied IR.
+     * The callback runs after NativeCodeSlab::emit has produced its result.
+     */
+    void SetPortableIREmitCompletion(PortableIREmitCompletion completion,
                                      void* user_arg);
 
     /**
