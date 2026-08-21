@@ -1018,19 +1018,22 @@ private:
                                : PortableIREmitOutcome::AlreadyPresent);
                 if (portable_ir_emit_completion != nullptr) {
                     portable_ir_emit_completion(
-                            portable_ir_emit_completion_arg,
-                            descriptor.Value(), generation, outcome);
+                        portable_ir_emit_completion_arg,
+                        descriptor.Value(), generation, outcome);
                 }
-                if (emitted.entrypoint == nullptr) {
-                    return NativeCodeSlab::BlockDescriptor{
-                        native_code_slab->return_from_run_code(), 0,
-                        generation};
+                if (emitted.entrypoint != nullptr) {
+                    return emitted;
                 }
-                return emitted;
                 }
             }
         }
 
+        // A portable block is an optional optimization. If its native emit
+        // fails (for example because the slab raced an invalidation or the IR
+        // is no longer compatible), continue through the ordinary translator
+        // in this same safe execution boundary. Returning the dispatcher here
+        // would repeatedly retry the failed portable block and can produce a
+        // zero-tick busy loop.
         IR::Block ir_block = TranslateBlock(descriptor);
         auto emitted = native_code_slab->emit(ir_block, generation);
         if (emitted.entrypoint == nullptr) {
