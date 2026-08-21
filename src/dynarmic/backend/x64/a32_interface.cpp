@@ -6,11 +6,14 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 #include <boost/icl/interval_set.hpp>
@@ -120,6 +123,39 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
     return conf;
 }
 
+// Workspace-only fault injection. The hook is read once when a slab is
+// initialized, so it cannot add an environment lookup to the guest hot path.
+// It is intentionally inert unless a test sets this variable.
+enum class TestEmitFailure : std::uint8_t {
+    None,
+    Before,
+    After,
+    Commit,
+    Null,
+    Generation,
+};
+
+[[nodiscard]] static TestEmitFailure ReadTestEmitFailure() noexcept {
+    const char* const value = std::getenv("ILEMU_DYNARMIC_TEST_EMIT_FAILURE");
+    if (value == nullptr) return TestEmitFailure::None;
+    if (std::strcmp(value, "before-once") == 0) {
+        return TestEmitFailure::Before;
+    }
+    if (std::strcmp(value, "after-once") == 0) {
+        return TestEmitFailure::After;
+    }
+    if (std::strcmp(value, "commit-once") == 0) {
+        return TestEmitFailure::Commit;
+    }
+    if (std::strcmp(value, "null-once") == 0) {
+        return TestEmitFailure::Null;
+    }
+    if (std::strcmp(value, "generation-once") == 0) {
+        return TestEmitFailure::Generation;
+    }
+    return TestEmitFailure::None;
+}
+
 struct NativeCodeSlab::Impl {
     using BlockDescriptor = NativeCodeSlab::BlockDescriptor;
 
@@ -187,6 +223,7 @@ struct NativeCodeSlab::Impl {
         conf = std::move(config);
         code_cache_size = conf->code_cache_size;
         shared_mode = shared;
+        test_emit_failure = ReadTestEmitFailure();
         initialized = true;
     }
 
@@ -231,6 +268,11 @@ struct NativeCodeSlab::Impl {
     [[nodiscard]] BlockDescriptor emit(
             IR::Block& block, std::uint64_t expected_generation) {
         std::lock_guard lock{mutex};
+        if (test_emit_failure == TestEmitFailure::Generation &&
+            !test_emit_failure_injected) {
+            test_emit_failure_injected = true;
+            request_generation_transition(false);
+        }
         if (clear_pending || !pending_ranges.empty() ||
             expected_generation != current_generation) {
             return {};
@@ -240,7 +282,22 @@ struct NativeCodeSlab::Impl {
                 existing->entrypoint, existing->size, current_generation,
                 false};
         }
+        if (test_emit_failure == TestEmitFailure::Before &&
+            !test_emit_failure_injected) {
+            test_emit_failure_injected = true;
+            throw std::runtime_error{"injected portable emit failure before code"};
+        }
+        if (test_emit_failure == TestEmitFailure::Null &&
+            !test_emit_failure_injected) {
+            test_emit_failure_injected = true;
+            return {};
+        }
         const auto result = emitter->Emit(block);
+        if (test_emit_failure == TestEmitFailure::After &&
+            !test_emit_failure_injected) {
+            test_emit_failure_injected = true;
+            throw std::runtime_error{"injected portable emit failure after code"};
+        }
         return BlockDescriptor{
             result.entrypoint, result.size, current_generation,
             result.entrypoint != nullptr};
@@ -253,6 +310,11 @@ struct NativeCodeSlab::Impl {
 
     void ensure_memory_committed(std::size_t codesize) {
         std::lock_guard lock{mutex};
+        if (test_emit_failure == TestEmitFailure::Commit &&
+            !test_emit_failure_injected) {
+            test_emit_failure_injected = true;
+            throw std::runtime_error{"injected portable code commit failure"};
+        }
         block_of_code->EnsureMemoryCommitted(codesize);
     }
 
@@ -528,6 +590,8 @@ struct NativeCodeSlab::Impl {
     bool initialized{};
     bool shared_mode{};
     bool clear_pending{};
+    TestEmitFailure test_emit_failure{TestEmitFailure::None};
+    bool test_emit_failure_injected{};
     mutable std::condition_variable_any generation_changed;
 };
 
@@ -788,6 +852,10 @@ struct Jit::Impl {
     PortableIREmitOutcome PrecompileWithResult(IR::Block block) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        if (!block.HasTerminal()) {
+            abandon_portable_emit();
+            return PortableIREmitOutcome::EmitFailed;
+        }
         NativeCodeSlab::BlockDescriptor existing;
         auto generation = native_code_slab->generation();
         if (native_code_slab->find_block(
@@ -802,10 +870,17 @@ struct Jit::Impl {
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
             generation = native_code_slab->generation();
         }
-        native_code_slab->ensure_memory_committed(
-            MINIMUM_REMAINING_CODESIZE);
-        const auto emitted = native_code_slab->emit(block, generation);
+        NativeCodeSlab::BlockDescriptor emitted;
+        try {
+            native_code_slab->ensure_memory_committed(
+                MINIMUM_REMAINING_CODESIZE);
+            emitted = native_code_slab->emit(block, generation);
+        } catch (...) {
+            abandon_portable_emit();
+            return PortableIREmitOutcome::EmitFailed;
+        }
         if (emitted.entrypoint == nullptr) {
+            abandon_portable_emit();
             return PortableIREmitOutcome::EmitFailed;
         }
         return emitted.newly_emitted
@@ -828,6 +903,22 @@ struct Jit::Impl {
             PortableIREmitCompletion completion, void* user_arg) noexcept {
         portable_ir_emit_completion = completion;
         portable_ir_emit_completion_arg = user_arg;
+    }
+
+    void abandon_portable_emit() noexcept {
+        invalidate_entire_cache = true;
+        HaltExecution(HaltReason::CacheInvalidation);
+        if (!jit_interface->is_executing) {
+            try {
+                PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            } catch (...) {
+                // Keep the request armed for the next host boundary. The
+                // exception that caused the portable emit failure must not
+                // escape into the guest or turn into a second completion.
+                invalidate_entire_cache = true;
+                HaltExecution(HaltReason::CacheInvalidation);
+            }
+        }
     }
 
     void ClearCache() {
@@ -973,67 +1064,92 @@ private:
 
         const auto translation_started = std::chrono::steady_clock::now();
 
-        constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
-        if (native_code_slab->space_remaining() <
-            MINIMUM_REMAINING_CODESIZE) {
-            invalidate_entire_cache = true;
-            if (jit_interface->is_executing) {
-                // A shared slab cannot overwrite its code region while any
-                // executor is still running from it. Return through the
-                // dispatcher and let the host perform the pending clear at a
-                // safe execution boundary.
-                HaltExecution(HaltReason::CacheInvalidation);
-                return NativeCodeSlab::BlockDescriptor{
-                    native_code_slab->return_from_run_code(), 0};
-            }
-            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
-            generation = native_code_slab->generation();
-        }
-        native_code_slab->ensure_memory_committed(
-            MINIMUM_REMAINING_CODESIZE);
-
-        // This is deliberately after the NativeCodeSlab lookup and before
-        // demand translation. The provider is an optional, prevalidated
-        // artifact hand-off; it must not perform store/disk work here.
-        if (portable_ir_demand_provider != nullptr) {
-            if (auto* const artifact = portable_ir_demand_provider(
-                        portable_ir_demand_provider_arg, descriptor.Value(),
-                        generation);
-                artifact != nullptr) {
-                if (artifact->Location().Value() != descriptor.Value()) {
-                    if (portable_ir_emit_completion != nullptr) {
-                        portable_ir_emit_completion(
-                                portable_ir_emit_completion_arg,
-                                descriptor.Value(), generation,
-                                PortableIREmitOutcome::EmitFailed);
-                    }
-                } else {
-                IR::Block ir_block = std::move(*artifact);
-                auto emitted = native_code_slab->emit(ir_block, generation);
-                const auto outcome =
-                        emitted.entrypoint == nullptr
-                          ? PortableIREmitOutcome::EmitFailed
-                          : (emitted.newly_emitted
-                               ? PortableIREmitOutcome::NativeEmitted
-                               : PortableIREmitOutcome::AlreadyPresent);
+        bool portable_completion_called = false;
+        auto* portable_artifact = portable_ir_demand_provider != nullptr
+                                      ? portable_ir_demand_provider(
+                                            portable_ir_demand_provider_arg,
+                                            descriptor.Value(), generation)
+                                      : nullptr;
+        const bool portable_artifact_handed_off = portable_artifact != nullptr;
+        const auto complete_portable_artifact =
+            [&](PortableIREmitOutcome outcome) noexcept {
+                if (!portable_artifact_handed_off ||
+                    portable_completion_called) {
+                    return;
+                }
+                portable_completion_called = true;
                 if (portable_ir_emit_completion != nullptr) {
                     portable_ir_emit_completion(
                         portable_ir_emit_completion_arg,
                         descriptor.Value(), generation, outcome);
                 }
-                if (emitted.entrypoint != nullptr) {
-                    return emitted;
-                }
-                }
+            };
+
+        if (portable_artifact != nullptr) {
+            bool descriptor_matches = false;
+            try {
+                descriptor_matches =
+                    portable_artifact->Location().Value() == descriptor.Value() &&
+                    portable_artifact->HasTerminal();
+            } catch (...) {
+                descriptor_matches = false;
+            }
+            if (!descriptor_matches) {
+                complete_portable_artifact(PortableIREmitOutcome::EmitFailed);
+                portable_artifact = nullptr;
             }
         }
 
-        // A portable block is an optional optimization. If its native emit
-        // fails (for example because the slab raced an invalidation or the IR
-        // is no longer compatible), continue through the ordinary translator
-        // in this same safe execution boundary. Returning the dispatcher here
-        // would repeatedly retry the failed portable block and can produce a
-        // zero-tick busy loop.
+        constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
+        if (native_code_slab->space_remaining() <
+            MINIMUM_REMAINING_CODESIZE) {
+            complete_portable_artifact(PortableIREmitOutcome::EmitFailed);
+            abandon_portable_emit();
+            return NativeCodeSlab::BlockDescriptor{
+                native_code_slab->return_from_run_code(), 0, generation};
+        }
+
+        if (portable_artifact != nullptr) {
+            try {
+                native_code_slab->ensure_memory_committed(
+                    MINIMUM_REMAINING_CODESIZE);
+            } catch (...) {
+                complete_portable_artifact(PortableIREmitOutcome::EmitFailed);
+                abandon_portable_emit();
+                return NativeCodeSlab::BlockDescriptor{
+                    native_code_slab->return_from_run_code(), 0, generation};
+            }
+
+            try {
+                IR::Block ir_block = std::move(*portable_artifact);
+                const auto emitted = native_code_slab->emit(ir_block, generation);
+                if (emitted.entrypoint == nullptr) {
+                    complete_portable_artifact(
+                        PortableIREmitOutcome::EmitFailed);
+                    abandon_portable_emit();
+                    return NativeCodeSlab::BlockDescriptor{
+                        native_code_slab->return_from_run_code(), 0, generation};
+                }
+                const auto outcome = emitted.newly_emitted
+                                         ? PortableIREmitOutcome::NativeEmitted
+                                         : PortableIREmitOutcome::AlreadyPresent;
+                complete_portable_artifact(outcome);
+                return emitted;
+            } catch (...) {
+                complete_portable_artifact(PortableIREmitOutcome::EmitFailed);
+                abandon_portable_emit();
+                return NativeCodeSlab::BlockDescriptor{
+                    native_code_slab->return_from_run_code(), 0, generation};
+            }
+        }
+
+        // A malformed or unavailable portable artifact is an optional
+        // optimization miss. It has not entered NativeCodeSlab::emit, so the
+        // ordinary translator remains the safe fallback. Exceptions from this
+        // ordinary translation/emission path intentionally retain Dynarmic's
+        // normal error semantics and are not relabeled as artifact misses.
+        native_code_slab->ensure_memory_committed(
+            MINIMUM_REMAINING_CODESIZE);
         IR::Block ir_block = TranslateBlock(descriptor);
         auto emitted = native_code_slab->emit(ir_block, generation);
         if (emitted.entrypoint == nullptr) {
