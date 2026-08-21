@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
-#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -15,6 +13,11 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+#include <cstdlib>
+#include <cstring>
+#endif
 
 #include <boost/icl/interval_set.hpp>
 #include <fmt/format.h>
@@ -123,9 +126,10 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
     return conf;
 }
 
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
 // Workspace-only fault injection. The hook is read once when a slab is
 // initialized, so it cannot add an environment lookup to the guest hot path.
-// It is intentionally inert unless a test sets this variable.
+// The entire implementation is absent from production builds.
 enum class TestEmitFailure : std::uint8_t {
     None,
     Before,
@@ -155,6 +159,7 @@ enum class TestEmitFailure : std::uint8_t {
     }
     return TestEmitFailure::None;
 }
+#endif
 
 struct NativeCodeSlab::Impl {
     using BlockDescriptor = NativeCodeSlab::BlockDescriptor;
@@ -223,7 +228,9 @@ struct NativeCodeSlab::Impl {
         conf = std::move(config);
         code_cache_size = conf->code_cache_size;
         shared_mode = shared;
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         test_emit_failure = ReadTestEmitFailure();
+#endif
         initialized = true;
     }
 
@@ -268,11 +275,13 @@ struct NativeCodeSlab::Impl {
     [[nodiscard]] BlockDescriptor emit(
             IR::Block& block, std::uint64_t expected_generation) {
         std::lock_guard lock{mutex};
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         if (test_emit_failure == TestEmitFailure::Generation &&
             !test_emit_failure_injected) {
             test_emit_failure_injected = true;
             request_generation_transition(false);
         }
+#endif
         if (clear_pending || !pending_ranges.empty() ||
             expected_generation != current_generation) {
             return {};
@@ -282,6 +291,7 @@ struct NativeCodeSlab::Impl {
                 existing->entrypoint, existing->size, current_generation,
                 false};
         }
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         if (test_emit_failure == TestEmitFailure::Before &&
             !test_emit_failure_injected) {
             test_emit_failure_injected = true;
@@ -292,12 +302,15 @@ struct NativeCodeSlab::Impl {
             test_emit_failure_injected = true;
             return {};
         }
+#endif
         const auto result = emitter->Emit(block);
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         if (test_emit_failure == TestEmitFailure::After &&
             !test_emit_failure_injected) {
             test_emit_failure_injected = true;
             throw std::runtime_error{"injected portable emit failure after code"};
         }
+#endif
         return BlockDescriptor{
             result.entrypoint, result.size, current_generation,
             result.entrypoint != nullptr};
@@ -310,11 +323,13 @@ struct NativeCodeSlab::Impl {
 
     void ensure_memory_committed(std::size_t codesize) {
         std::lock_guard lock{mutex};
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         if (test_emit_failure == TestEmitFailure::Commit &&
             !test_emit_failure_injected) {
             test_emit_failure_injected = true;
             throw std::runtime_error{"injected portable code commit failure"};
         }
+#endif
         block_of_code->EnsureMemoryCommitted(codesize);
     }
 
@@ -590,8 +605,10 @@ struct NativeCodeSlab::Impl {
     bool initialized{};
     bool shared_mode{};
     bool clear_pending{};
+#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
     TestEmitFailure test_emit_failure{TestEmitFailure::None};
     bool test_emit_failure_injected{};
+#endif
     mutable std::condition_variable_any generation_changed;
 };
 
