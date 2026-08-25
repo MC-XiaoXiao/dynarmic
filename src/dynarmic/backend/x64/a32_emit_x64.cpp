@@ -273,8 +273,21 @@ void A32EmitX64::GenTerminalHandlers() {
 
     Xbyak::Label fast_dispatch_cache_miss, rsb_cache_miss;
 
+    const auto emit_execution_boundary = [this] {
+        if (conf.enable_cycle_counting) {
+            code.cmp(qword[rsp + ABI_SHADOW_SPACE +
+                           offsetof(StackLayout, cycles_remaining)],
+                     0);
+            code.jng(code.GetReturnFromRunCodeAddress());
+        } else {
+            code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
+            code.jne(code.GetForceReturnFromRunCodeAddress());
+        }
+    };
+
     code.align();
     terminal_handler_pop_rsb_hint = code.getCurr<const void*>();
+    emit_execution_boundary();
     calculate_location_descriptor();
     code.mov(eax, dword[r15 + offsetof(A32JitState, rsb_ptr)]);
     code.sub(eax, 1);
@@ -300,6 +313,7 @@ void A32EmitX64::GenTerminalHandlers() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.align();
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+        emit_execution_boundary();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
         if (conf.fast_dispatch_table_link) {
@@ -1330,6 +1344,22 @@ void A32EmitX64::EmitStableLink(
 
     Xbyak::Label miss, descriptor_match;
     const auto target = target_desc.Value();
+
+    // A stable-table hit is still a LinkBlock terminal.  Preserve the same
+    // execution boundary as the ordinary patched-link path before bypassing
+    // the dispatcher.  Otherwise a chain of shared-slab blocks can run past
+    // the caller's cycle budget indefinitely, and HaltExecution cannot regain
+    // control until some unrelated callback happens to return to the host.
+    if (conf.enable_cycle_counting) {
+        code.cmp(qword[rsp + ABI_SHADOW_SPACE +
+                       offsetof(StackLayout, cycles_remaining)],
+                 0);
+        code.jng(code.GetReturnFromRunCodeAddress());
+    } else {
+        code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
+        code.jne(code.GetForceReturnFromRunCodeAddress());
+    }
+
     code.mov(rbx, target);
     code.mov(r12, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
     code.mov(r12, qword[r12]);
