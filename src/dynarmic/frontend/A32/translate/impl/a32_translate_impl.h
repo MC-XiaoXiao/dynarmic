@@ -888,7 +888,11 @@ struct TranslatorVisitor final {
     // Advanced SIMD three registers with different lengths
     bool asimd_VADDL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
     bool asimd_VSUBL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
+    bool asimd_VADDHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
+    bool asimd_VRADDHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VABAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
+    bool asimd_VSUBHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
+    bool asimd_VRSUBHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VABDL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VMLAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
     bool asimd_VMULL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool P, bool N, bool M, size_t Vm);

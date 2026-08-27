@@ -27,6 +27,16 @@ enum class WidenBehaviour {
     Both,
 };
 
+enum class HighNarrowingOperation {
+    Add,
+    Subtract,
+};
+
+enum class HighNarrowingRounding {
+    None,
+    Round,
+};
+
 template<bool WithDst, typename Callable>
 bool BitwiseInstruction(TranslatorVisitor& v, bool D, size_t Vn, size_t Vd, bool N, bool Q, bool M, size_t Vm, Callable fn) {
     if (Q && (mcl::bit::get_bit<0>(Vd) || mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm))) {
@@ -237,6 +247,39 @@ bool WideInstruction(TranslatorVisitor& v, bool U, bool D, size_t sz, size_t Vn,
     const auto wide_m = U ? v.ir.VectorZeroExtend(esize, reg_m) : v.ir.VectorSignExtend(esize, reg_m);
     const auto result = fn(esize * 2, reg_d, widen_first ? wide_n : reg_n, wide_m);
 
+    v.ir.SetVector(d, result);
+    return true;
+}
+
+bool HighNarrowingInstruction(TranslatorVisitor& v, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm, HighNarrowingOperation operation, HighNarrowingRounding rounding) {
+    if (sz == 0b11) {
+        return v.DecodeError();
+    }
+
+    if (mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm)) {
+        return v.UndefinedInstruction();
+    }
+
+    const size_t destination_esize = 8U << sz;
+    const size_t source_esize = 2 * destination_esize;
+    const auto d = ToVector(false, Vd, D);
+    const auto n = ToVector(true, Vn, N);
+    const auto m = ToVector(true, Vm, M);
+
+    const auto reg_n = v.ir.GetVector(n);
+    const auto reg_m = v.ir.GetVector(m);
+    auto wide_result = operation == HighNarrowingOperation::Add
+                         ? v.ir.VectorAdd(source_esize, reg_n, reg_m)
+                         : v.ir.VectorSub(source_esize, reg_n, reg_m);
+
+    if (rounding == HighNarrowingRounding::Round) {
+        const u64 rounding_value = 1ULL << (destination_esize - 1);
+        const auto rounding_vector = v.ir.VectorBroadcast(source_esize, v.I(source_esize, rounding_value));
+        wide_result = v.ir.VectorAdd(source_esize, wide_result, rounding_vector);
+    }
+
+    const auto high_halves = v.ir.VectorLogicalShiftRight(source_esize, wide_result, static_cast<u8>(destination_esize));
+    const auto result = v.ir.VectorNarrow(source_esize, high_halves);
     v.ir.SetVector(d, result);
     return true;
 }
@@ -911,8 +954,24 @@ bool TranslatorVisitor::asimd_VSUBL(bool U, bool D, size_t sz, size_t Vn, size_t
     });
 }
 
+bool TranslatorVisitor::asimd_VADDHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowingInstruction(*this, D, sz, Vn, Vd, N, M, Vm, HighNarrowingOperation::Add, HighNarrowingRounding::None);
+}
+
+bool TranslatorVisitor::asimd_VRADDHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowingInstruction(*this, D, sz, Vn, Vd, N, M, Vm, HighNarrowingOperation::Add, HighNarrowingRounding::Round);
+}
+
 bool TranslatorVisitor::asimd_VABAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
     return AbsoluteDifferenceLong(*this, U, D, sz, Vn, Vd, N, M, Vm, AccumulateBehavior::Accumulate);
+}
+
+bool TranslatorVisitor::asimd_VSUBHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowingInstruction(*this, D, sz, Vn, Vd, N, M, Vm, HighNarrowingOperation::Subtract, HighNarrowingRounding::None);
+}
+
+bool TranslatorVisitor::asimd_VRSUBHN(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowingInstruction(*this, D, sz, Vn, Vd, N, M, Vm, HighNarrowingOperation::Subtract, HighNarrowingRounding::Round);
 }
 
 bool TranslatorVisitor::asimd_VABDL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
