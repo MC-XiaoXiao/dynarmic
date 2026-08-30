@@ -60,6 +60,12 @@ struct Jit::Impl final {
         return hr;
     }
 
+    void SetHostExecutionBlockBudget(std::uint32_t) noexcept {}
+
+    HostExecutionBudgetResult GetHostExecutionBudgetResult() const noexcept {
+        return HostExecutionBudgetResult{};
+    }
+
     void ClearCache() {
         std::unique_lock lock{invalidation_mutex};
         invalidate_entire_cache = true;
@@ -178,6 +184,15 @@ HaltReason Jit::Run() {
 
 HaltReason Jit::Step() {
     return impl->Step();
+}
+
+void Jit::SetHostExecutionBlockBudget(std::uint32_t block_budget) {
+    impl->SetHostExecutionBlockBudget(block_budget);
+}
+
+Jit::HostExecutionBudgetResult
+Jit::GetHostExecutionBudgetResult() const {
+    return impl->GetHostExecutionBudgetResult();
 }
 
 void Jit::ClearCache() {

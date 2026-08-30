@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include <atomic>
 #include <array>
+#include <atomic>
 
 #include <mcl/stdint.hpp>
 
@@ -42,6 +42,13 @@ struct A32JitState {
     u32 guest_MXCSR = 0x00001f80;
     u32 asimd_MXCSR = 0x00009fc0;
     volatile u32 halt_reason = 0;
+
+    // Host-only one-shot execution boundary. Generated linked blocks consume
+    // this counter without touching halt_reason, so returning to the emulator
+    // scheduler cannot be observed as a Guest AST or interrupt.
+    u32 host_execution_block_budget = 0;
+    u32 host_execution_block_budget_initial = 0;
+    u32 host_execution_budget_exhausted = 0;
 
     // Exclusive state
     u32 exclusive_state = 0;

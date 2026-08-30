@@ -30,6 +30,7 @@ struct PolyfillOptions {
 struct A32GetSetEliminationOptions {
     bool convert_nzc_to_nz = false;
     bool convert_nz_to_nzc = false;
+    bool preserve_state_at_memory_access = false;
 };
 
 void PolyfillPass(IR::Block& block, const PolyfillOptions& opt);

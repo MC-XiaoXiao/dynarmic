@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -49,6 +50,11 @@ public:
         std::uint64_t retired_code_bytes{};
     };
 
+    struct RetiredCodeStats {
+        std::size_t descriptors{};
+        std::uint64_t code_bytes{};
+    };
+
     A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface);
     ~A32EmitX64() override;
 
@@ -62,6 +68,8 @@ public:
 
     tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(
         const boost::icl::interval_set<u32>& ranges);
+    RetiredCodeStats RetireCodeRange(
+        const void* begin, const void* end);
 
     [[nodiscard]] CacheStats GetCacheStats() const noexcept;
 
@@ -84,15 +92,18 @@ public:
     // mask so adjacent ARM basic blocks do not alias the same slot.
     [[nodiscard]] static constexpr u64 fast_dispatch_table_index(
         u64 location_descriptor) noexcept {
-        return ((location_descriptor ^ (location_descriptor >> 32U)) <<
-                fast_dispatch_table_address_shift) &
-               fast_dispatch_table_mask;
+        return ((location_descriptor ^ (location_descriptor >> 32U)) << fast_dispatch_table_address_shift) & fast_dispatch_table_mask;
     }
 
 protected:
     const A32::UserConfig conf;
     A32::Jit* jit_interface;
     BlockRangeInformation<u32> block_ranges;
+    // Segment retirement is ordered by host entrypoint. Looking up one
+    // allocation range is O(log N + retired) instead of rescanning every
+    // descriptor whenever a bounded cache segment rotates.
+    std::map<const u8*, IR::LocationDescriptor, std::less<>>
+        blocks_by_entrypoint;
     std::uint64_t retired_code_bytes{};
 
     void EmitCondPrelude(const A32EmitContext& ctx);
@@ -168,9 +179,10 @@ protected:
     void EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
     void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
 
+    void EmitHostExecutionBoundary(
+        std::optional<std::uint32_t> return_pc = std::nullopt);
     void EmitStableLink(const IR::LocationDescriptor& target_desc);
-    void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg,
-                       IR::LocationDescriptor target) override;
+    void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target) override;
 
     // Patching
     bool ShouldPatchExistingBlocks() const override;

@@ -44,6 +44,10 @@ public:
         std::size_t descriptor_count{};
         std::uint64_t invalidated_descriptors{};
         std::uint64_t retired_code_bytes{};
+        std::uint64_t segment_recycles{};
+        std::uint64_t recycled_descriptors{};
+        std::uint64_t recycled_code_bytes{};
+        std::uint64_t full_generation_clears{};
     };
 
     struct BlockDescriptor {
@@ -62,9 +66,7 @@ public:
     // Internal integration surface used by Jit. A shared slab publishes
     // immutable native blocks; each Jit supplies its own link cells and
     // fast-dispatch table.
-    void initialize(UserConfig conf, Jit* jit_interface, void* jit_state,
-                    const void* (*lookup)(void*), void* lookup_arg,
-                    bool shared_mode);
+    void initialize(UserConfig conf, Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared_mode);
     [[nodiscard]] std::uint64_t generation() const;
     // Lock-free observation for executor-side cache probes. It may lag a
     // requested invalidation until that transition is safe to publish, but it
@@ -80,6 +82,10 @@ public:
     void register_executor(void* storage, void* jit_state);
     void unregister_executor(void* storage, void* jit_state);
     void clear_cache();
+    // Retire one cold host-code segment while preserving descriptors backed
+    // by all other segments. Like clear_cache(), publication occurs only at a
+    // boundary where no registered executor is active.
+    void recycle_cache();
     void invalidate_cache_range(std::uint32_t start_address,
                                 std::size_t length);
     void request_cache_clear();
@@ -108,6 +114,12 @@ private:
 
 class Jit final {
 public:
+    struct HostExecutionBudgetResult {
+        std::uint32_t blocks_executed{};
+        bool exhausted{};
+        bool supported{};
+    };
+
     enum class PortableIREmitOutcome : std::uint8_t {
         NativeEmitted,
         AlreadyPresent,
@@ -118,13 +130,9 @@ public:
     // Dynarmic calls this only after a NativeCodeSlab miss and consumes the
     // returned block while emitting native code. The provider must not do
     // I/O, acquire locks, allocate, or scan; it may return nullptr.
-    using PortableIRDemandProvider = IR::Block* (*)(
-            void* user_arg, std::uint64_t location_descriptor,
-            std::uint64_t slab_generation) noexcept;
+    using PortableIRDemandProvider = IR::Block* (*)(void* user_arg, std::uint64_t location_descriptor, std::uint64_t slab_generation) noexcept;
     using PortableIREmitCompletion = void (*)(
-            void* user_arg, std::uint64_t location_descriptor,
-            std::uint64_t slab_generation,
-            PortableIREmitOutcome outcome) noexcept;
+        void* user_arg, std::uint64_t location_descriptor, std::uint64_t slab_generation, PortableIREmitOutcome outcome) noexcept;
 
     explicit Jit(UserConfig conf);
     ~Jit();
@@ -140,6 +148,20 @@ public:
      * Cannot be recursively called.
      */
     HaltReason Step();
+
+    /**
+     * Applies a one-shot host cooperation budget to the next Run call.
+     * A value of zero disables the boundary. Exhaustion returns from Run
+     * without setting a guest-visible halt reason.
+     */
+    void SetHostExecutionBlockBudget(std::uint32_t block_budget);
+
+    /**
+     * Reports consumption of the most recently configured host budget.
+     * Backends without a native block boundary report supported == false.
+     */
+    [[nodiscard]] HostExecutionBudgetResult
+    GetHostExecutionBudgetResult() const;
 
     /**
      * Compiles a previously observed A32 location descriptor without

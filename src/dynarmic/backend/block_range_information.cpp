@@ -46,12 +46,18 @@ tsl::robin_set<IR::LocationDescriptor> BlockRangeInformation<ProgramCounterType>
         }
     }
 
-    // A descriptor is invalidated as a unit. Removing only the intersection
-    // would leave its other old ranges discoverable by a later invalidation.
-    // The reverse index keeps this cleanup proportional to the invalidated
-    // descriptors and their recorded ranges instead of the whole map.
-    invalidated_descriptors += erase_locations.size();
-    for (const auto& descriptor : erase_locations) {
+    InvalidateLocations(erase_locations);
+    return erase_locations;
+}
+
+template<typename ProgramCounterType>
+void BlockRangeInformation<ProgramCounterType>::InvalidateLocations(
+        const tsl::robin_set<IR::LocationDescriptor>& locations) {
+    // A descriptor is invalidated as a unit. Removing only one interval would
+    // leave its other old ranges discoverable by a later invalidation. This
+    // exact-location path is also used when a host-code segment is recycled.
+    invalidated_descriptors += locations.size();
+    for (const auto& descriptor : locations) {
         const auto descriptor_it = ranges_by_descriptor.find(descriptor);
         if (descriptor_it == ranges_by_descriptor.end()) {
             continue;
@@ -65,7 +71,6 @@ tsl::robin_set<IR::LocationDescriptor> BlockRangeInformation<ProgramCounterType>
         range_count -= descriptor_it->second.iterative_size();
         ranges_by_descriptor.erase(descriptor_it);
     }
-    return erase_locations;
 }
 
 template<typename ProgramCounterType>

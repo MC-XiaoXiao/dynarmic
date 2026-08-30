@@ -30,6 +30,8 @@ public:
     void AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location);
     void ClearCache();
     tsl::robin_set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<ProgramCounterType>& ranges);
+    void InvalidateLocations(
+        const tsl::robin_set<IR::LocationDescriptor>& locations);
     [[nodiscard]] Stats GetStats() const noexcept;
 
 private:

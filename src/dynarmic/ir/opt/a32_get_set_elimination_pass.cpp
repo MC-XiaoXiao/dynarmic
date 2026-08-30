@@ -21,7 +21,7 @@ namespace Dynarmic::Optimization {
 
 namespace {
 
-void FlagsPass(IR::Block& block) {
+void FlagsPass(IR::Block& block, bool preserve_state_at_memory_access) {
     using Iterator = std::reverse_iterator<IR::Block::iterator>;
 
     struct FlagInfo {
@@ -68,6 +68,18 @@ void FlagsPass(IR::Block& block) {
     A32::IREmitter ir{block, A32::LocationDescriptor{block.Location()}, {}};
 
     for (auto inst = block.rbegin(); inst != block.rend(); ++inst) {
+        if (preserve_state_at_memory_access && inst->IsMemoryReadOrWrite()) {
+            // A memory callback may request a precise abort after this
+            // instruction. Keep value requests live across the access, but
+            // prevent a later write from making the last pre-access state
+            // publication dead.
+            nzcvq.set_not_required = false;
+            nzcv.set_not_required = false;
+            nz.set_not_required = false;
+            c_flag.set_not_required = false;
+            ge.set_not_required = false;
+            continue;
+        }
         switch (inst->GetOpcode()) {
         case IR::Opcode::A32GetCFlag: {
             do_get(c_flag, inst);
@@ -180,7 +192,7 @@ void FlagsPass(IR::Block& block) {
     }
 }
 
-void RegisterPass(IR::Block& block) {
+void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
     using Iterator = IR::Block::iterator;
 
     struct RegInfo {
@@ -254,6 +266,18 @@ void RegisterPass(IR::Block& block) {
     A32::IREmitter ir{block, A32::LocationDescriptor{block.Location()}, {}};
 
     for (auto inst = block.begin(); inst != block.end(); ++inst) {
+        if (preserve_state_at_memory_access && inst->IsMemoryReadOrWrite()) {
+            // Preserve value forwarding on the ordinary mapped-memory path,
+            // while making the latest state store before this access
+            // ineligible for elimination by a later store. The backend's
+            // MemoryAbort side exit can then observe exact architectural state
+            // without forcing every post-access get to reload JIT state.
+            for (auto& info : reg_info)
+                info.last_set_instruction.reset();
+            for (auto& info : ext_reg_info)
+                info.last_set_instruction.reset();
+            continue;
+        }
         switch (inst->GetOpcode()) {
         case IR::Opcode::A32GetRegister: {
             const A32::Reg reg = inst->GetArg(0).GetA32RegRef();
@@ -369,9 +393,10 @@ void RegisterPass(IR::Block& block) {
 
 }  // namespace
 
-void A32GetSetElimination(IR::Block& block, A32GetSetEliminationOptions) {
-    FlagsPass(block);
-    RegisterPass(block);
+void A32GetSetElimination(
+        IR::Block& block, A32GetSetEliminationOptions options) {
+    FlagsPass(block, options.preserve_state_at_memory_access);
+    RegisterPass(block, options.preserve_state_at_memory_access);
 }
 
 }  // namespace Dynarmic::Optimization
