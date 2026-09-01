@@ -415,6 +415,8 @@ struct NativeCodeSlab::Impl {
             return {};
         }
         if (const auto existing = emitter->GetBasicBlock(block.Location())) {
+            publish_direct_link_target(
+                block.Location(), existing->entrypoint);
             touch_code_segment(existing->entrypoint);
             return BlockDescriptor{
                 existing->entrypoint, existing->size, current_generation,
@@ -438,6 +440,8 @@ struct NativeCodeSlab::Impl {
         }
 #endif
         if (result.entrypoint != nullptr) {
+            publish_direct_link_target(
+                block.Location(), result.entrypoint);
             update_active_segment_usage();
             touch_code_segment(result.entrypoint);
         }
@@ -535,6 +539,30 @@ struct NativeCodeSlab::Impl {
         }
     }
 
+    void publish_direct_link_target(
+        const IR::LocationDescriptor& location, const void* entrypoint) {
+        if (!shared_mode || entrypoint == nullptr) {
+            return;
+        }
+        if (active_executions == 0) {
+            emitter->PatchPublishedTarget(location, entrypoint);
+            return;
+        }
+        pending_direct_link_targets.insert(location);
+    }
+
+    void finish_pending_direct_link_publication() {
+        if (active_executions != 0 || pending_direct_link_targets.empty()) {
+            return;
+        }
+        for (const auto& location : pending_direct_link_targets) {
+            if (const auto block = emitter->GetBasicBlock(location)) {
+                emitter->PatchPublishedTarget(location, block->entrypoint);
+            }
+        }
+        pending_direct_link_targets.clear();
+    }
+
     void finish_pending_invalidation() {
         if (active_executions != 0)
             return;
@@ -544,6 +572,7 @@ struct NativeCodeSlab::Impl {
                 emitter->ClearCache();
                 block_of_code->ClearCache();
                 reset_code_segments();
+                pending_direct_link_targets.clear();
                 ++full_generation_clears;
                 current_generation = pending_generation;
                 published_generation.store(current_generation,
@@ -665,6 +694,7 @@ struct NativeCodeSlab::Impl {
         if (!initialized)
             return;
         finish_pending_invalidation();
+        finish_pending_direct_link_publication();
     }
 
     [[nodiscard]] HaltReason run_code(void* jit_state,
@@ -734,6 +764,7 @@ struct NativeCodeSlab::Impl {
         generation_changed.wait(lock, [this] {
             return !clear_pending && pending_ranges.empty();
         });
+        finish_pending_direct_link_publication();
         auto* const state = static_cast<A32JitState*>(jit_state);
         const auto executor = std::find_if(
             executors.begin(), executors.end(),
@@ -764,6 +795,7 @@ struct NativeCodeSlab::Impl {
         executor->active = false;
         --active_executions;
         finish_pending_invalidation();
+        finish_pending_direct_link_publication();
     }
 
     struct Executor {
@@ -797,6 +829,7 @@ struct NativeCodeSlab::Impl {
     std::atomic<std::uint64_t> published_generation{1};
     std::uint64_t pending_generation{1};
     boost::icl::interval_set<u32> pending_ranges;
+    tsl::robin_set<IR::LocationDescriptor> pending_direct_link_targets;
     bool initialized{};
     bool shared_mode{};
     bool clear_pending{};

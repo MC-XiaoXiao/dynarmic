@@ -70,6 +70,8 @@ public:
         const boost::icl::interval_set<u32>& ranges);
     RetiredCodeStats RetireCodeRange(
         const void* begin, const void* end);
+    void PatchPublishedTarget(
+        const IR::LocationDescriptor& location, const void* entrypoint);
 
     [[nodiscard]] CacheStats GetCacheStats() const noexcept;
 
@@ -111,6 +113,7 @@ protected:
     std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
     FastDispatchEntry* fast_dispatch_table = nullptr;
     void ClearFastDispatchTable();
+    void ForgetPatchLocations(const void* begin, const void* end);
 
     void (*memory_read_128)() = nullptr;   // Dummy
     void (*memory_write_128)() = nullptr;  // Dummy
@@ -122,6 +125,7 @@ protected:
 
     const void* terminal_handler_pop_rsb_hint;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
+    const void* terminal_handler_fast_dispatch_after_boundary = nullptr;
     FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
     void GenTerminalHandlers();
 

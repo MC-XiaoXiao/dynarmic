@@ -217,13 +217,25 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
         }
     }
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        // Shared blocks are immutable. Remove only their descriptors and
-        // discard patch metadata; rewriting old terminal bytes would race an
-        // executor that still has a pointer into the slab.
+        // The slab reaches this path only after every executor has left
+        // generated code. Revert links to retiring targets before removing
+        // patch sites owned by the retiring source blocks.
+        code.EnableWriting();
+        SCOPE_EXIT {
+            code.DisableWriting();
+        };
+        for (const auto& location : locations) {
+            Unpatch(location);
+        }
+        for (const auto& location : locations) {
+            if (const auto block = GetBasicBlock(location)) {
+                const auto* const begin = reinterpret_cast<const u8*>(block->entrypoint);
+                ForgetPatchLocations(begin, begin + block->size);
+            }
+        }
         for (const auto& location : locations) {
             block_descriptors.erase(location);
         }
-        patch_information.clear();
     } else {
         InvalidateBasicBlocks(locations);
     }
@@ -239,6 +251,7 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     }
 
     tsl::robin_set<IR::LocationDescriptor> locations;
+    std::vector<std::pair<const u8*, const u8*>> retired_ranges;
     std::uint64_t code_bytes{};
     auto entrypoint = blocks_by_entrypoint.lower_bound(first);
     while (entrypoint != blocks_by_entrypoint.end() &&
@@ -246,21 +259,27 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
         const auto location = entrypoint->second;
         if (const auto block = GetBasicBlock(location)) {
             code_bytes += block->size;
+            const auto* const block_begin = reinterpret_cast<const u8*>(block->entrypoint);
+            retired_ranges.emplace_back(
+                block_begin, block_begin + block->size);
         }
         locations.insert(location);
         entrypoint = blocks_by_entrypoint.erase(entrypoint);
     }
     block_ranges.InvalidateLocations(locations);
+    code.EnableWriting();
+    SCOPE_EXIT {
+        code.DisableWriting();
+    };
     for (const auto& location : locations) {
+        Unpatch(location);
         block_descriptors.erase(location);
     }
 
-    // Shared-slab terminals always enter an executor-local dispatch table;
-    // they never contain a direct pointer to another native block. Discarding
-    // patch metadata and clearing those tables at the slab boundary therefore
-    // makes the retired segment safe to overwrite without rewriting retained
-    // immutable code.
-    patch_information.clear();
+    for (const auto& [range_begin, range_end] : retired_ranges) {
+        ForgetPatchLocations(range_begin, range_end);
+    }
+
     for (auto it = fastmem_patch_info.begin();
          it != fastmem_patch_info.end();) {
         const auto* const rip = reinterpret_cast<const u8*>(it->first);
@@ -272,6 +291,54 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     }
     retired_code_bytes += code_bytes;
     return RetiredCodeStats{locations.size(), code_bytes};
+}
+
+void A32EmitX64::PatchPublishedTarget(
+    const IR::LocationDescriptor& location, const void* entrypoint) {
+    if (!(conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) || entrypoint == nullptr) {
+        return;
+    }
+    code.EnableWriting();
+    SCOPE_EXIT {
+        code.DisableWriting();
+    };
+    Patch(location, entrypoint);
+}
+
+void A32EmitX64::ForgetPatchLocations(const void* begin, const void* end) {
+    const auto first = reinterpret_cast<std::uintptr_t>(begin);
+    const auto last = reinterpret_cast<std::uintptr_t>(end);
+    if (first >= last) {
+        return;
+    }
+
+    std::vector<IR::LocationDescriptor> targets;
+    targets.reserve(patch_information.size());
+    for (const auto& [target, patches] : patch_information) {
+        static_cast<void>(patches);
+        targets.push_back(target);
+    }
+
+    std::vector<IR::LocationDescriptor> empty_targets;
+    const auto forget = [first, last](std::vector<CodePtr>& locations) {
+        std::erase_if(locations, [first, last](CodePtr location) {
+            const auto address = reinterpret_cast<std::uintptr_t>(location);
+            return address >= first && address < last;
+        });
+    };
+    for (const auto& target : targets) {
+        auto& patches = patch_information[target];
+        forget(patches.jg);
+        forget(patches.jz);
+        forget(patches.jmp);
+        forget(patches.mov_rcx);
+        if (patches.jg.empty() && patches.jz.empty() && patches.jmp.empty() && patches.mov_rcx.empty()) {
+            empty_targets.push_back(target);
+        }
+    }
+    for (const auto& target : empty_targets) {
+        patch_information.erase(target);
+    }
 }
 
 A32EmitX64::CacheStats A32EmitX64::GetCacheStats() const noexcept {
@@ -378,6 +445,7 @@ void A32EmitX64::GenTerminalHandlers() {
         code.align();
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
         emit_execution_boundary();
+        terminal_handler_fast_dispatch_after_boundary = code.getCurr<const void*>();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
         if (conf.fast_dispatch_table_link) {
@@ -1347,7 +1415,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
         return;
     }
 
-    if (!(conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch))) {
+    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        EmitHostExecutionBoundary();
+    } else {
         EmitHostExecutionBoundary(
             A32::LocationDescriptor{terminal.next}.PC());
     }
@@ -1391,9 +1461,8 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::Location
     }
 
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        // Shared generated blocks remain immutable. Probe the executor-local
-        // generation slot directly; a miss enters the existing dispatcher,
-        // which compiles or publishes the target and fills the same slot.
+        // Shared links are rewritten only at a slab quiescent boundary. A
+        // missing target enters the existing dispatcher until publication.
         EmitStableLink(terminal.next);
         return;
     }
@@ -1411,14 +1480,8 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::Location
 
 void A32EmitX64::EmitStableLink(
     const IR::LocationDescriptor& target_desc) {
-    using namespace Xbyak::util;
-
-    Xbyak::Label miss, descriptor_match;
-    const auto target = target_desc.Value();
-
-    // A stable-table hit is still a LinkBlock terminal. Preserve both the
-    // host-only cooperation boundary and the Guest cycle/halt boundary before
-    // bypassing the dispatcher.
+    // A direct shared link remains a Guest block boundary. Preserve host
+    // cooperation and Guest cycle/halt checks before entering its target.
     EmitHostExecutionBoundary();
     if (conf.enable_cycle_counting) {
         code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)],
@@ -1429,30 +1492,12 @@ void A32EmitX64::EmitStableLink(
         code.jne(code.GetForceReturnFromRunCodeAddress());
     }
 
-    code.mov(rbx, target);
-    code.mov(r12, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
-    code.mov(r12, qword[r12]);
-    code.lea(rbp, ptr[r12 + fast_dispatch_table_index(target)]);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_table_probes)]);
-    code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
-    code.je(descriptor_match, code.T_NEAR);
-    code.cmp(qword[rbp + offsetof(FastDispatchEntry, location_descriptor)],
-             std::numeric_limits<u32>::max());
-    code.je(miss, code.T_NEAR);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_table_collisions)]);
-    code.jmp(miss, code.T_NEAR);
-    code.L(descriptor_match);
-    code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
-    code.test(rax, rax);
-    code.jz(miss, code.T_NEAR);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
-    code.inc(qword[r15 + offsetof(A32JitState, fast_link_hits)]);
-    code.jmp(rax);
-
-    code.L(miss);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
-    code.inc(qword[r15 + offsetof(A32JitState, fast_link_misses)]);
-    code.jmp(terminal_handler_fast_dispatch_hint);
+    patch_information[target_desc].jmp.push_back(code.getCurr());
+    if (const auto target = GetBasicBlock(target_desc)) {
+        EmitPatchJmp(target_desc, target->entrypoint);
+    } else {
+        EmitPatchJmp(target_desc);
+    }
 }
 
 void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
@@ -1463,46 +1508,20 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
         return;
     }
 
-    using namespace Xbyak::util;
-
-    Xbyak::Label miss, done, descriptor_match;
     const auto target_value = target.Value();
     code.mov(index_reg.cvt32(), dword[r15 + offsetof(A32JitState, rsb_ptr)]);
     code.mov(loc_desc_reg, target_value);
     code.mov(qword[r15 + index_reg * sizeof(u64) + offsetof(A32JitState, rsb_location_descriptors)],
              loc_desc_reg);
 
-    // The RSB stores only a descriptor and a generation-local pointer.  Query
-    // the current executor's stable table here so shared generated code never
-    // embeds a private native address.
-    code.mov(rcx, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
-    code.mov(rcx, qword[rcx]);
-    code.lea(rcx, ptr[rcx + fast_dispatch_table_index(target_value)]);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_table_probes)]);
-    code.cmp(loc_desc_reg,
-             qword[rcx + offsetof(FastDispatchEntry, location_descriptor)]);
-    code.je(descriptor_match, code.T_NEAR);
-    code.cmp(qword[rcx + offsetof(FastDispatchEntry, location_descriptor)],
-             std::numeric_limits<u32>::max());
-    code.je(miss, code.T_NEAR);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_table_collisions)]);
-    code.jmp(miss, code.T_NEAR);
-    code.L(descriptor_match);
-    code.mov(rcx, qword[rcx + offsetof(FastDispatchEntry, code_ptr)]);
-    code.test(rcx, rcx);
-    code.jz(miss, code.T_NEAR);
+    patch_information[target].mov_rcx.push_back(code.getCurr());
+    if (const auto target_block = GetBasicBlock(target)) {
+        EmitPatchMovRcx(target_block->entrypoint);
+    } else {
+        EmitPatchMovRcx();
+    }
     code.mov(qword[r15 + index_reg * sizeof(u64) + offsetof(A32JitState, rsb_codeptrs)],
              rcx);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_hits)]);
-    code.jmp(done, code.T_NEAR);
-
-    code.L(miss);
-    code.xor_(ecx, ecx);
-    code.mov(qword[r15 + index_reg * sizeof(u64) + offsetof(A32JitState, rsb_codeptrs)],
-             rcx);
-    code.inc(qword[r15 + offsetof(A32JitState, stable_link_misses)]);
-
-    code.L(done);
     code.add(index_reg.cvt32(), 1);
     code.and_(index_reg.cvt32(), u32(A32JitState::RSBPtrMask));
     code.mov(dword[r15 + offsetof(A32JitState, rsb_ptr)], index_reg.cvt32());
@@ -1551,7 +1570,8 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
 void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.jg(terminal_handler_fast_dispatch_hint);
+        code.jg(target_code_ptr ? target_code_ptr
+                                : terminal_handler_fast_dispatch_after_boundary);
     } else if (target_code_ptr) {
         code.jg(target_code_ptr);
     } else {
@@ -1564,7 +1584,8 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr 
 void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.jz(terminal_handler_fast_dispatch_hint);
+        code.jz(target_code_ptr ? target_code_ptr
+                                : terminal_handler_fast_dispatch_after_boundary);
     } else if (target_code_ptr) {
         code.jz(target_code_ptr);
     } else {
@@ -1577,7 +1598,8 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr 
 void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.jmp(terminal_handler_fast_dispatch_hint);
+        code.jmp(target_code_ptr ? target_code_ptr
+                                 : terminal_handler_fast_dispatch_after_boundary);
     } else if (target_code_ptr) {
         code.jmp(target_code_ptr);
     } else {
@@ -1590,7 +1612,11 @@ void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
 void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         const CodePtr patch_location = code.getCurr();
-        code.xor_(code.ecx, code.ecx);
+        if (target_code_ptr) {
+            code.mov(code.rcx, reinterpret_cast<u64>(target_code_ptr));
+        } else {
+            code.xor_(code.ecx, code.ecx);
+        }
         code.EnsurePatchLocationSize(patch_location, 10);
         return;
     }
@@ -1603,9 +1629,8 @@ void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
 }
 
 bool A32EmitX64::ShouldPatchExistingBlocks() const {
-    // Linked shared-slab terminals are emitted against the executor-local
-    // dispatcher from the start. Registering a later target must not rewrite
-    // instruction bytes that another executor may currently be running.
+    // The shared slab publishes target patches after all executors leave
+    // generated code. The ordinary emitter cannot establish that boundary.
     return !(conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch));
 }
 
