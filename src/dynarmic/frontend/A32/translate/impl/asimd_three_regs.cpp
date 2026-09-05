@@ -555,6 +555,34 @@ bool TranslatorVisitor::asimd_VRSHL(bool U, bool D, size_t sz, size_t Vn, size_t
     return true;
 }
 
+bool TranslatorVisitor::asimd_VQRSHL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool Q, bool M, size_t Vm) {
+    if (Q && (mcl::bit::get_bit<0>(Vd) || mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm))) {
+        return UndefinedInstruction();
+    }
+
+    const size_t esize = 8U << sz;
+    const auto d = ToVector(Q, Vd, D);
+    const auto m = ToVector(Q, Vm, M);
+    const auto n = ToVector(Q, Vn, N);
+
+    const auto reg_m = ir.GetVector(m);
+    const auto reg_n = ir.GetVector(n);
+    // The signed low byte selects the direction independently in each lane.
+    // Existing saturating shifts own FPSCR.QC; only right shifts need rounding.
+    const auto negative = ir.VectorArithmeticShiftRight(esize,
+        ir.VectorLogicalShiftLeft(esize, reg_n, static_cast<u8>(esize - 8U)),
+        static_cast<u8>(esize - 1U));
+    const auto saturated = U ? ir.VectorUnsignedSaturatedShiftLeft(esize, reg_m, reg_n)
+                             : ir.VectorSignedSaturatedShiftLeft(esize, reg_m, reg_n);
+    const auto rounded = U ? ir.VectorRoundingShiftLeftUnsigned(esize, reg_m, reg_n)
+                           : ir.VectorRoundingShiftLeftSigned(esize, reg_m, reg_n);
+    const auto result = ir.VectorOr(ir.VectorAnd(rounded, negative),
+        ir.VectorAndNot(saturated, negative));
+
+    ir.SetVector(d, result);
+    return true;
+}
+
 bool TranslatorVisitor::asimd_VMAX(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool Q, bool M, bool op, size_t Vm) {
     if (sz == 0b11) {
         return UndefinedInstruction();
