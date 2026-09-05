@@ -1457,7 +1457,9 @@ private:
         // pass so the register allocator cannot alias an inserted value with
         // the first translated instruction.
         Optimization::NamingPass(ir_block);
+#ifndef NDEBUG
         Optimization::VerificationPass(ir_block);
+#endif
         return ir_block;
     }
 
