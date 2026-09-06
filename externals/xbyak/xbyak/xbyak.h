@@ -1180,6 +1180,13 @@ public:
 	void db(uint64_t code, size_t codeSize)
 	{
 		if (codeSize > 8) XBYAK_THROW(ERR_BAD_PARAMETER)
+		if (codeSize <= maxSize_ - size_) {
+			for (size_t i = 0; i < codeSize; i++) {
+				top_[size_ + i] = static_cast<uint8_t>(code >> (i * 8));
+			}
+			size_ += codeSize;
+			return;
+		}
 		for (size_t i = 0; i < codeSize; i++) db(static_cast<uint8_t>(code >> (i * 8)));
 	}
 	void dw(uint32_t code) { db(code, 2); }
