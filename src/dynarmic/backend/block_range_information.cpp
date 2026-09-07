@@ -14,7 +14,7 @@ namespace Dynarmic::Backend {
 
 template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location) {
-    block_ranges.add(std::make_pair(range, std::set<IR::LocationDescriptor>{location}));
+    block_ranges.add(std::make_pair(range, DescriptorSet{location}));
 
     auto& descriptor_ranges = ranges_by_descriptor[location];
     const auto previous_range_count = descriptor_ranges.iterative_size();
@@ -66,7 +66,7 @@ void BlockRangeInformation<ProgramCounterType>::InvalidateLocations(
         for (const auto& descriptor_range : descriptor_it->second) {
             block_ranges.subtract(std::make_pair(
                 descriptor_range,
-                std::set<IR::LocationDescriptor>{descriptor}));
+                DescriptorSet{descriptor}));
         }
         range_count -= descriptor_it->second.iterative_size();
         ranges_by_descriptor.erase(descriptor_it);
