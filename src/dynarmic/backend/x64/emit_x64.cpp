@@ -30,10 +30,21 @@ namespace Dynarmic::Backend::X64 {
 
 using namespace Xbyak::util;
 
-EmitContext::EmitContext(RegAlloc& reg_alloc, IR::Block& block)
-        : reg_alloc(reg_alloc), block(block) {}
+EmitContext::EmitContext(RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels)
+        : reg_alloc(reg_alloc), block(block), labels(labels), first_label(labels.size()) {}
 
-EmitContext::~EmitContext() = default;
+EmitContext::~EmitContext() {
+    // Deferred code only borrows labels. Destroy its closures before releasing
+    // this context's labels, including when emission exits through an exception.
+    deferred_emits.clear();
+    while (labels.size() > first_label) {
+        labels.pop_back();
+    }
+}
+
+Xbyak::Label* EmitContext::NewLabel() {
+    return &labels.emplace_back();
+}
 
 void EmitContext::EraseInstruction(IR::Inst* inst) {
     block.Instructions().erase(inst);

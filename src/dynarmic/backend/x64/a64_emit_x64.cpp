@@ -37,8 +37,8 @@ namespace Dynarmic::Backend::X64 {
 
 using namespace Xbyak::util;
 
-A64EmitContext::A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block)
-        : EmitContext(reg_alloc, block), conf(conf) {}
+A64EmitContext::A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels)
+        : EmitContext(reg_alloc, block, labels), conf(conf) {}
 
 A64::LocationDescriptor A64EmitContext::Location() const {
     return A64::LocationDescriptor{block.Location()};
@@ -93,7 +93,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) {
             return std::max(count, static_cast<size_t>(inst.GetName()) + 1);
         });
     RegAlloc reg_alloc{code, register_allocator_storage, gpr_order, any_xmm, instruction_count};
-    A64EmitContext ctx{conf, reg_alloc, block};
+    A64EmitContext ctx{conf, reg_alloc, block, label_storage};
 
     // Start emitting.
     code.align();

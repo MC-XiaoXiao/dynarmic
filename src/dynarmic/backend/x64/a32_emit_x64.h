@@ -11,12 +11,14 @@
 #include <optional>
 #include <set>
 #include <tuple>
+#include <vector>
 
 #include <tsl/robin_map.h>
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/backend/x64/memory_fallback_table.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
@@ -27,7 +29,7 @@ namespace Dynarmic::Backend::X64 {
 class RegAlloc;
 
 struct A32EmitContext final : public EmitContext {
-    A32EmitContext(const A32::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block);
+    A32EmitContext(const A32::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels);
 
     A32::LocationDescriptor Location() const;
     A32::LocationDescriptor EndLocation() const;
@@ -99,6 +101,7 @@ public:
 
 protected:
     const A32::UserConfig conf;
+    const std::vector<HostLoc> gpr_order;
     A32::Jit* jit_interface;
     BlockRangeInformation<u32> block_ranges;
     // Segment retirement is ordered by host entrypoint. Looking up one
@@ -118,9 +121,9 @@ protected:
     void (*memory_read_128)() = nullptr;   // Dummy
     void (*memory_write_128)() = nullptr;  // Dummy
 
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+    MemoryFallbackTable<64> read_fallbacks;
+    MemoryFallbackTable<64> write_fallbacks;
+    MemoryFallbackTable<64> exclusive_write_fallbacks;
     void GenFastmemFallbacks();
 
     const void* terminal_handler_pop_rsb_hint;

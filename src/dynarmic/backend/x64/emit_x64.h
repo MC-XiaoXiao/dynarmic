@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -50,10 +51,13 @@ template<typename T>
 using HalfVectorArray = std::array<T, A64FullVectorWidth::value / mcl::bitsizeof<T> / 2>;
 
 struct EmitContext {
-    EmitContext(RegAlloc& reg_alloc, IR::Block& block);
+    EmitContext(RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels);
+    EmitContext(const EmitContext&) = delete;
+    EmitContext& operator=(const EmitContext&) = delete;
     virtual ~EmitContext();
 
     void EraseInstruction(IR::Inst* inst);
+    Xbyak::Label* NewLabel();
 
     virtual FP::FPCR FPCR(bool fpcr_controlled = true) const = 0;
 
@@ -63,6 +67,10 @@ struct EmitContext {
     IR::Block& block;
 
     std::vector<std::function<void()>> deferred_emits;
+
+private:
+    std::deque<Xbyak::Label>& labels;
+    const size_t first_label;
 };
 
 using SharedLabel = std::shared_ptr<Xbyak::Label>;
@@ -92,6 +100,7 @@ public:
 
 protected:
     RegAlloc::Storage register_allocator_storage;
+    std::deque<Xbyak::Label> label_storage;
 
     // Microinstruction emitters
 #define OPCODE(name, type, ...) void Emit##name(EmitContext& ctx, IR::Inst* inst);

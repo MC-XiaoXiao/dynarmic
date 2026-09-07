@@ -6,13 +6,13 @@
 #pragma once
 
 #include <array>
-#include <map>
 #include <optional>
 #include <tuple>
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a64_jitstate.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/backend/x64/memory_fallback_table.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/interface/A64/config.h"
@@ -23,7 +23,7 @@ namespace Dynarmic::Backend::X64 {
 class RegAlloc;
 
 struct A64EmitContext final : public EmitContext {
-    A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block);
+    A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels);
 
     A64::LocationDescriptor Location() const;
     bool IsSingleStep() const;
@@ -71,9 +71,9 @@ protected:
     void (*memory_exclusive_write_128)();
     void GenMemory128Accessors();
 
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+    MemoryFallbackTable<128> read_fallbacks;
+    MemoryFallbackTable<128> write_fallbacks;
+    MemoryFallbackTable<128> exclusive_write_fallbacks;
     void GenFastmemFallbacks();
 
     const void* terminal_handler_pop_rsb_hint;

@@ -53,7 +53,7 @@ void EmitDetectMisalignedVAddr(BlockOfCode& code, EmitContext& ctx, size_t bitsi
 
     const u32 page_align_mask = static_cast<u32>(page_size - 1) & ~align_mask;
 
-    SharedLabel detect_boundary = GenSharedLabel(), resume = GenSharedLabel();
+    const auto detect_boundary = ctx.NewLabel(), resume = ctx.NewLabel();
 
     code.jnz(*detect_boundary, code.T_NEAR);
     code.L(*resume);

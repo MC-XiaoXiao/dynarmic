@@ -61,8 +61,8 @@ static Xbyak::Address MJitStateExtReg(A32::ExtReg reg) {
     ASSERT_FALSE("Should never happen.");
 }
 
-A32EmitContext::A32EmitContext(const A32::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block)
-        : EmitContext(reg_alloc, block), conf(conf) {}
+A32EmitContext::A32EmitContext(const A32::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels)
+        : EmitContext(reg_alloc, block, labels), conf(conf) {}
 
 A32::LocationDescriptor A32EmitContext::Location() const {
     return A32::LocationDescriptor{block.Location()};
@@ -82,7 +82,16 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
 }
 
 A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface)
-        : EmitX64(code), conf(std::move(conf)), jit_interface(jit_interface) {
+        : EmitX64(code), conf(std::move(conf)), gpr_order([this] {
+              std::vector<HostLoc> gprs{any_gpr};
+              if (this->conf.page_table) {
+                  gprs.erase(std::find(gprs.begin(), gprs.end(), HostLoc::R14));
+              }
+              if (this->conf.fastmem_pointer || (this->conf.read_page_table && this->conf.read_page_table != this->conf.page_table)) {
+                  gprs.erase(std::find(gprs.begin(), gprs.end(), HostLoc::R13));
+              }
+              return gprs;
+          }()), jit_interface(jit_interface) {
     if (this->conf.fast_dispatch_table_storage) {
         fast_dispatch_table = static_cast<FastDispatchEntry*>(this->conf.fast_dispatch_table_storage);
     } else {
@@ -116,23 +125,12 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
         code.DisableWriting();
     };
 
-    const std::vector<HostLoc> gpr_order = [this] {
-        std::vector<HostLoc> gprs{any_gpr};
-        if (conf.page_table) {
-            gprs.erase(std::find(gprs.begin(), gprs.end(), HostLoc::R14));
-        }
-        if (conf.fastmem_pointer || (conf.read_page_table && conf.read_page_table != conf.page_table)) {
-            gprs.erase(std::find(gprs.begin(), gprs.end(), HostLoc::R13));
-        }
-        return gprs;
-    }();
-
     const size_t instruction_count = std::accumulate(
         block.begin(), block.end(), size_t{1}, [](size_t count, const IR::Inst& inst) {
             return std::max(count, static_cast<size_t>(inst.GetName()) + 1);
         });
     RegAlloc reg_alloc{code, register_allocator_storage, gpr_order, any_xmm, instruction_count};
-    A32EmitContext ctx{conf, reg_alloc, block};
+    A32EmitContext ctx{conf, reg_alloc, block, label_storage};
 
     // Start emitting.
     code.align();

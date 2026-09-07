@@ -1175,6 +1175,14 @@ public:
 	}
 	void db(const uint8_t *code, size_t codeSize)
 	{
+		if (codeSize <= maxSize_ - size_) {
+			// Keep forward-copy semantics when the source overlaps this buffer.
+			for (size_t i = 0; i < codeSize; i++) {
+				const uint8_t value = code[i];
+				top_[size_++] = value;
+			}
+			return;
+		}
 		for (size_t i = 0; i < codeSize; i++) db(code[i]);
 	}
 	void db(uint64_t code, size_t codeSize)
