@@ -91,6 +91,8 @@ public:
     void InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& locations);
 
 protected:
+    RegAlloc::Storage register_allocator_storage;
+
     // Microinstruction emitters
 #define OPCODE(name, type, ...) void Emit##name(EmitContext& ctx, IR::Inst* inst);
 #define A32OPC(...)

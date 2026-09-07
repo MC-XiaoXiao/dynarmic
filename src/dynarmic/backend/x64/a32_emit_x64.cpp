@@ -131,7 +131,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
         block.begin(), block.end(), size_t{1}, [](size_t count, const IR::Inst& inst) {
             return std::max(count, static_cast<size_t>(inst.GetName()) + 1);
         });
-    RegAlloc reg_alloc{code, gpr_order, any_xmm, instruction_count};
+    RegAlloc reg_alloc{code, register_allocator_storage, gpr_order, any_xmm, instruction_count};
     A32EmitContext ctx{conf, reg_alloc, block};
 
     // Start emitting.

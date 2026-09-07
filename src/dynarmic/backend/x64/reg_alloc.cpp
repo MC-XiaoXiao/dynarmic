@@ -253,12 +253,23 @@ bool Argument::IsInMemory() const {
     return HostLocIsSpill(*reg_alloc.ValueLocation(value.GetInst()));
 }
 
-RegAlloc::RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order, size_t instruction_count)
+RegAlloc::RegAlloc(BlockOfCode& code, Storage& storage, std::span<const HostLoc> gpr_order, std::span<const HostLoc> xmm_order, size_t instruction_count)
         : gpr_order(gpr_order)
         , xmm_order(xmm_order)
-        , hostloc_info(NonSpillHostLocCount + SpillCount)
-        , value_locations(instruction_count)
-        , code(code) {}
+        , hostloc_info(storage.hostloc_info)
+        , value_locations(storage.value_locations)
+        , code(code) {
+    value_locations.assign(instruction_count, std::nullopt);
+}
+
+RegAlloc::~RegAlloc() {
+    // Successful emission leaves no live locations. Also release partially
+    // allocated values if emission exits through an exception, before the IR
+    // is destroyed and this emitter is reused.
+    for (size_t i = 0; i < active_location_count; ++i) {
+        LocInfo(active_locations[i]) = {};
+    }
+}
 
 RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
     ArgumentInfo ret = {Argument{*this}, Argument{*this}, Argument{*this}, Argument{*this}};
@@ -310,7 +321,7 @@ OpArg RegAlloc::UseOpArg(Argument& arg) {
 void RegAlloc::Use(Argument& arg, HostLoc host_loc) {
     ASSERT(!arg.allocated);
     arg.allocated = true;
-    UseImpl(arg.value, {host_loc});
+    UseImpl(arg.value, {&host_loc, 1});
 }
 
 Xbyak::Reg64 RegAlloc::UseScratchGpr(Argument& arg) {
@@ -328,7 +339,7 @@ Xbyak::Xmm RegAlloc::UseScratchXmm(Argument& arg) {
 void RegAlloc::UseScratch(Argument& arg, HostLoc host_loc) {
     ASSERT(!arg.allocated);
     arg.allocated = true;
-    UseScratchImpl(arg.value, {host_loc});
+    UseScratchImpl(arg.value, {&host_loc, 1});
 }
 
 void RegAlloc::DefineValue(IR::Inst* inst, const Xbyak::Reg& reg) {
@@ -354,7 +365,7 @@ Xbyak::Reg64 RegAlloc::ScratchGpr() {
 }
 
 Xbyak::Reg64 RegAlloc::ScratchGpr(HostLoc desired_location) {
-    return HostLocToReg64(ScratchImpl({desired_location}));
+    return HostLocToReg64(ScratchImpl({&desired_location, 1}));
 }
 
 Xbyak::Xmm RegAlloc::ScratchXmm() {
@@ -362,10 +373,10 @@ Xbyak::Xmm RegAlloc::ScratchXmm() {
 }
 
 Xbyak::Xmm RegAlloc::ScratchXmm(HostLoc desired_location) {
-    return HostLocToXmm(ScratchImpl({desired_location}));
+    return HostLocToXmm(ScratchImpl({&desired_location, 1}));
 }
 
-HostLoc RegAlloc::UseImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations) {
+HostLoc RegAlloc::UseImpl(IR::Value use_value, std::span<const HostLoc> desired_locations) {
     if (use_value.IsImmediate()) {
         return LoadImmediate(use_value, ScratchImpl(desired_locations));
     }
@@ -397,7 +408,7 @@ HostLoc RegAlloc::UseImpl(IR::Value use_value, const std::vector<HostLoc>& desir
     return destination_location;
 }
 
-HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations) {
+HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, std::span<const HostLoc> desired_locations) {
     if (use_value.IsImmediate()) {
         return LoadImmediate(use_value, ScratchImpl(desired_locations));
     }
@@ -426,7 +437,7 @@ HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>
     return destination_location;
 }
 
-HostLoc RegAlloc::ScratchImpl(const std::vector<HostLoc>& desired_locations) {
+HostLoc RegAlloc::ScratchImpl(std::span<const HostLoc> desired_locations) {
     const HostLoc location = SelectARegister(desired_locations);
     MoveOutOfTheWay(location);
     MarkActive(location);
@@ -489,7 +500,7 @@ void RegAlloc::HostCall(IR::Inst* result_def,
     }
 
     for (HostLoc caller_saved : other_caller_save) {
-        ScratchImpl({caller_saved});
+        ScratchImpl({&caller_saved, 1});
     }
 }
 
@@ -532,7 +543,7 @@ void RegAlloc::EmitVerboseDebuggingOutput() {
     }
 }
 
-HostLoc RegAlloc::SelectARegister(const std::vector<HostLoc>& desired_locations) const {
+HostLoc RegAlloc::SelectARegister(std::span<const HostLoc> desired_locations) const {
     ASSERT(desired_locations.size() <= NonSpillHostLocCount);
     std::array<HostLoc, NonSpillHostLocCount> candidates;
     const auto candidates_end = std::copy(

@@ -8,9 +8,11 @@
 #include <array>
 #include <functional>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include <boost/container/small_vector.hpp>
 #include <mcl/stdint.hpp>
 #include <xbyak/xbyak.h>
 
@@ -65,7 +67,9 @@ private:
     size_t total_uses = 0;
 
     // Value state
-    std::vector<IR::Inst*> values;
+    // Most locations hold a single SSA value. Keep the common case inside
+    // the allocator while retaining dynamic capacity for aliases.
+    boost::container::small_vector<IR::Inst*, 1> values;
     size_t max_bit_width = 0;
 };
 
@@ -107,10 +111,25 @@ private:
 };
 
 class RegAlloc final {
+    static constexpr size_t hostloc_count = NonSpillHostLocCount + SpillCount;
+
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(BlockOfCode& code, std::vector<HostLoc> gpr_order, std::vector<HostLoc> xmm_order, size_t instruction_count);
+    // One emitter uses this scratch state serially. A block's allocator
+    // releases every live value before the next block borrows the storage.
+    class Storage {
+        friend class RegAlloc;
+        std::array<HostLocInfo, hostloc_count> hostloc_info;
+        std::vector<std::optional<HostLoc>> value_locations;
+    };
+
+    // The emitter owns both register lists for the duration of this block.
+    explicit RegAlloc(BlockOfCode& code, Storage& storage, std::span<const HostLoc> gpr_order, std::span<const HostLoc> xmm_order, size_t instruction_count);
+    ~RegAlloc();
+
+    RegAlloc(const RegAlloc&) = delete;
+    RegAlloc& operator=(const RegAlloc&) = delete;
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     void RegisterPseudoOperation(IR::Inst* inst);
@@ -155,15 +174,15 @@ public:
 private:
     friend struct Argument;
 
-    std::vector<HostLoc> gpr_order;
-    std::vector<HostLoc> xmm_order;
+    std::span<const HostLoc> gpr_order;
+    std::span<const HostLoc> xmm_order;
 
-    HostLoc SelectARegister(const std::vector<HostLoc>& desired_locations) const;
+    HostLoc SelectARegister(std::span<const HostLoc> desired_locations) const;
     std::optional<HostLoc> ValueLocation(const IR::Inst* value) const;
 
-    HostLoc UseImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations);
-    HostLoc UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations);
-    HostLoc ScratchImpl(const std::vector<HostLoc>& desired_locations);
+    HostLoc UseImpl(IR::Value use_value, std::span<const HostLoc> desired_locations);
+    HostLoc UseScratchImpl(IR::Value use_value, std::span<const HostLoc> desired_locations);
+    HostLoc ScratchImpl(std::span<const HostLoc> desired_locations);
     void DefineValueImpl(IR::Inst* def_inst, HostLoc host_loc);
     void DefineValueImpl(IR::Inst* def_inst, const IR::Value& use_inst);
 
@@ -177,9 +196,8 @@ private:
     HostLoc FindFreeSpill() const;
     void MarkActive(HostLoc loc);
 
-    static constexpr size_t hostloc_count = NonSpillHostLocCount + SpillCount;
-    std::vector<HostLocInfo> hostloc_info;
-    std::vector<std::optional<HostLoc>> value_locations;
+    std::array<HostLocInfo, hostloc_count>& hostloc_info;
+    std::vector<std::optional<HostLoc>>& value_locations;
     std::array<HostLoc, hostloc_count> active_locations{};
     std::array<bool, hostloc_count> active_location_flags{};
     size_t active_location_count = 0;
