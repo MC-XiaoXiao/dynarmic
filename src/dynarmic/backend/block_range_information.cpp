@@ -14,7 +14,8 @@ namespace Dynarmic::Backend {
 
 template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location) {
-    block_ranges.add(std::make_pair(range, DescriptorSet{location}));
+    // Favor ascending code ranges without retaining an invalidatable iterator.
+    block_ranges.add(block_ranges.end(), std::make_pair(range, DescriptorSet{location}));
 
     auto [descriptor_it, inserted] = ranges_by_descriptor.try_emplace(location, range);
     auto& descriptor_ranges = descriptor_it.value();
