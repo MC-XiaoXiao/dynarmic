@@ -21,8 +21,10 @@
 
 namespace Dynarmic::IR {
 
+// Start with a small slab for typical short blocks. Pool grows without
+// relocating instructions when translation or optimization needs more space.
 Block::Block(const LocationDescriptor& location)
-        : location{location}, end_location{location}, cond{Cond::AL}, instruction_alloc_pool{std::make_unique<Common::Pool>(sizeof(Inst), 4096)} {}
+        : location{location}, end_location{location}, cond{Cond::AL}, instruction_alloc_pool{std::make_unique<Common::Pool>(sizeof(Inst), 128)} {}
 
 Block::~Block() = default;
 
