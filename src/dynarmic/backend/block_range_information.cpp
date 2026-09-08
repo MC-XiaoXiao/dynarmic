@@ -16,10 +16,15 @@ template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location) {
     block_ranges.add(std::make_pair(range, DescriptorSet{location}));
 
-    auto& descriptor_ranges = ranges_by_descriptor[location];
-    const auto previous_range_count = descriptor_ranges.iterative_size();
-    descriptor_ranges.add(range);
-    const auto current_range_count = descriptor_ranges.iterative_size();
+    auto [descriptor_it, inserted] = ranges_by_descriptor.try_emplace(location, range);
+    auto& descriptor_ranges = descriptor_it.value();
+    if (inserted) {
+        range_count += descriptor_ranges.Size();
+        return;
+    }
+    const auto previous_range_count = descriptor_ranges.Size();
+    descriptor_ranges.Add(range);
+    const auto current_range_count = descriptor_ranges.Size();
     if (current_range_count >= previous_range_count) {
         range_count += current_range_count - previous_range_count;
     } else {
@@ -30,7 +35,8 @@ void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_in
 template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::ClearCache() {
     block_ranges.clear();
-    ranges_by_descriptor.clear();
+    // A full cache release must also return the hash table's bucket storage.
+    decltype(ranges_by_descriptor){}.swap(ranges_by_descriptor);
     range_count = 0;
 }
 
@@ -63,12 +69,12 @@ void BlockRangeInformation<ProgramCounterType>::InvalidateLocations(
             continue;
         }
 
-        for (const auto& descriptor_range : descriptor_it->second) {
+        descriptor_it->second.ForEach([&](const auto& descriptor_range) {
             block_ranges.subtract(std::make_pair(
                 descriptor_range,
                 DescriptorSet{descriptor}));
-        }
-        range_count -= descriptor_it->second.iterative_size();
+        });
+        range_count -= descriptor_it->second.Size();
         ranges_by_descriptor.erase(descriptor_it);
     }
 }
