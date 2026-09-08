@@ -273,7 +273,8 @@ RegAlloc::~RegAlloc() {
 
 RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
     ArgumentInfo ret = {Argument{*this}, Argument{*this}, Argument{*this}, Argument{*this}};
-    for (size_t i = 0; i < inst->NumArgs(); i++) {
+    const size_t num_args = inst->NumArgs();
+    for (size_t i = 0; i < num_args; i++) {
         const IR::Value arg = inst->GetArg(i);
         ret[i].value = arg;
         if (!arg.IsImmediate() && !IsValuelessType(arg.GetType())) {
@@ -287,7 +288,8 @@ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
 void RegAlloc::RegisterPseudoOperation(IR::Inst* inst) {
     ASSERT(IsValueLive(inst) || !inst->HasUses());
 
-    for (size_t i = 0; i < inst->NumArgs(); i++) {
+    const size_t num_args = inst->NumArgs();
+    for (size_t i = 0; i < num_args; i++) {
         const IR::Value arg = inst->GetArg(i);
         if (!arg.IsImmediate() && !IsValuelessType(arg.GetType())) {
             if (const auto loc = ValueLocation(arg.GetInst())) {
@@ -544,7 +546,14 @@ void RegAlloc::EmitVerboseDebuggingOutput() {
 }
 
 HostLoc RegAlloc::SelectARegister(std::span<const HostLoc> desired_locations) const {
+    ASSERT(!desired_locations.empty());
     ASSERT(desired_locations.size() <= NonSpillHostLocCount);
+    // Both partition passes keep this candidate first when it is already
+    // unlocked and empty. Avoid copying/scanning the other candidates.
+    const HostLoc first = desired_locations.front();
+    if (!LocInfo(first).IsLocked() && LocInfo(first).IsEmpty()) {
+        return first;
+    }
     std::array<HostLoc, NonSpillHostLocCount> candidates;
     const auto candidates_end = std::copy(
             desired_locations.begin(), desired_locations.end(), candidates.begin());
