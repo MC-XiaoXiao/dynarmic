@@ -644,7 +644,9 @@ Value Inst::GetArg(size_t index) const {
 
 void Inst::SetArg(size_t index, Value value) {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::SetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
-    ASSERT_MSG(AreTypesCompatible(value.GetType(), GetArgTypeOf(op, index)), "Inst::SetArg: type {} of argument {} not compatible with operation {} ({})", value.GetType(), index, op, GetArgTypeOf(op, index));
+    const Type arg_type = GetArgTypeOf(op, index);
+    const Type value_type = value.GetType();
+    ASSERT_MSG(AreTypesCompatible(value_type, arg_type), "Inst::SetArg: type {} of argument {} not compatible with operation {} ({})", value_type, index, op, arg_type);
 
     if (!args[index].IsImmediate()) {
         UndoUse(args[index]);
