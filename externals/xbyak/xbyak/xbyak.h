@@ -18,6 +18,10 @@
 #include <list>
 #include <string>
 #include <algorithm>
+#ifdef XBYAK_USE_TSL_LABEL_TABLES
+#include <tsl/robin_map.h>
+#include <tsl/robin_set.h>
+#endif
 #ifndef NDEBUG
 #include <iostream>
 #endif
@@ -1459,9 +1463,17 @@ class LabelManager {
 		size_t offset;
 		int refCount;
 	};
+#ifdef XBYAK_USE_TSL_LABEL_TABLES
+	// Opt-in for consumers already using robin-map. Reuse buckets instead of
+	// allocating nodes for each short-lived assembler label.
+	typedef tsl::robin_map<int, ClabelVal> ClabelDefList;
+	// Label pointers are aligned; prime growth avoids clustering their low bits.
+	typedef tsl::robin_pg_set<Label*> LabelPtrList;
+#else
 	typedef XBYAK_STD_UNORDERED_MAP<int, ClabelVal> ClabelDefList;
-	typedef XBYAK_STD_UNORDERED_MULTIMAP<int, const JmpLabel> ClabelUndefList;
 	typedef XBYAK_STD_UNORDERED_SET<Label*> LabelPtrList;
+#endif
+	typedef XBYAK_STD_UNORDERED_MULTIMAP<int, const JmpLabel> ClabelUndefList;
 
 	CodeArray *base_;
 	// global : stateList_.front(), local : stateList_.back()
@@ -1528,10 +1540,15 @@ class LabelManager {
 		labelPtrList_.erase(label);
 		ClabelDefList::iterator i = clabelDefList_.find(id);
 		if (i == clabelDefList_.end()) return;
-		if (i->second.refCount == 1) {
-			clabelDefList_.erase(id);
+#ifdef XBYAK_USE_TSL_LABEL_TABLES
+		ClabelVal& value = i.value();
+#else
+		ClabelVal& value = i->second;
+#endif
+		if (value.refCount == 1) {
+			clabelDefList_.erase(i);
 		} else {
-			--i->second.refCount;
+			--value.refCount;
 		}
 	}
 	template<class T>
@@ -1550,7 +1567,11 @@ class LabelManager {
 		for (LabelPtrList::iterator i = labelPtrList_.begin(), ie = labelPtrList_.end(); i != ie; ++i) {
 			(*i)->clear();
 		}
+#ifdef XBYAK_USE_TSL_LABEL_TABLES
+		LabelPtrList().swap(labelPtrList_);
+#else
 		labelPtrList_.clear();
+#endif
 	}
 public:
 	LabelManager()
@@ -1568,7 +1589,12 @@ public:
 		stateList_.clear();
 		stateList_.push_back(SlabelState());
 		stateList_.push_back(SlabelState());
+#ifdef XBYAK_USE_TSL_LABEL_TABLES
+		// Release peak bucket storage when the code cache is reset.
+		ClabelDefList().swap(clabelDefList_);
+#else
 		clabelDefList_.clear();
+#endif
 		clabelUndefList_.clear();
 		resetLabelPtrList();
 	}

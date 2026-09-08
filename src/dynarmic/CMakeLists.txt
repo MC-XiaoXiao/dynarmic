@@ -262,6 +262,8 @@ if ("A64" IN_LIST DYNARMIC_FRONTENDS)
 endif()
 
 if ("x86_64" IN_LIST ARCHITECTURE)
+    # Xbyak's label-table layout must agree in every consuming translation unit.
+    target_compile_definitions(dynarmic PUBLIC XBYAK_USE_TSL_LABEL_TABLES=1)
     target_link_libraries(dynarmic
         PRIVATE
             xbyak::xbyak
@@ -502,11 +504,12 @@ set_target_properties(dynarmic PROPERTIES
 )
 target_compile_options(dynarmic PRIVATE ${DYNARMIC_CXX_FLAGS})
 target_link_libraries(dynarmic
+    PUBLIC
+        tsl::robin_map
     PRIVATE
         Boost::boost
         fmt::fmt
         merry::mcl
-        tsl::robin_map
 )
 if (DYNARMIC_USE_LLVM)
     target_include_directories(dynarmic PRIVATE ${LLVM_INCLUDE_DIRS})
