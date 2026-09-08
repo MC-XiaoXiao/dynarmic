@@ -1166,16 +1166,24 @@ public:
 		addrInfoList_.clear();
 		isCalledCalcJmpAddress_ = false;
 	}
-	void db(int code)
+private:
+	void dbGrow(int code)
 	{
-		if (size_ >= maxSize_) {
-			if (type_ == AUTO_GROW) {
-				growMemory();
-			} else {
-				XBYAK_THROW(ERR_CODE_IS_TOO_BIG)
-			}
+		if (type_ == AUTO_GROW) {
+			growMemory();
+		} else {
+			XBYAK_THROW(ERR_CODE_IS_TOO_BIG)
 		}
 		top_[size_++] = static_cast<uint8_t>(code);
+	}
+public:
+	void db(int code)
+	{
+		if (size_ < maxSize_) {
+			top_[size_++] = static_cast<uint8_t>(code);
+			return;
+		}
+		dbGrow(code);
 	}
 	void db(const uint8_t *code, size_t codeSize)
 	{
