@@ -5,9 +5,12 @@
 
 #include "dynarmic/ir/opcodes.h"
 
+#include <algorithm>
 #include <array>
-#include <vector>
+#include <initializer_list>
+#include <stdexcept>
 
+#include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/type.h"
 
 namespace Dynarmic::IR {
@@ -17,9 +20,18 @@ namespace Dynarmic::IR {
 namespace OpcodeInfo {
 
 struct Meta {
+    constexpr Meta(const char* name, Type type, std::initializer_list<Type> args)
+            : name(name), type(type), num_args(static_cast<unsigned>(args.size())) {
+        if (args.size() > arg_types.size()) {
+            throw std::out_of_range("IR opcode has too many arguments");
+        }
+        std::copy(args.begin(), args.end(), arg_types.begin());
+    }
+
     const char* name;
     Type type;
-    std::vector<Type> arg_types;
+    unsigned num_args;
+    std::array<Type, max_arg_count> arg_types{};
 };
 
 constexpr Type Void = Type::Void;
@@ -40,7 +52,7 @@ constexpr Type Cond = Type::Cond;
 constexpr Type Table = Type::Table;
 constexpr Type AccType = Type::AccType;
 
-static const std::array opcode_info{
+static constexpr std::array opcode_info{
 #define OPCODE(name, type, ...) Meta{#name, type, {__VA_ARGS__}},
 #define A32OPC(name, type, ...) Meta{#name, type, {__VA_ARGS__}},
 #define A64OPC(name, type, ...) Meta{#name, type, {__VA_ARGS__}},
@@ -52,16 +64,28 @@ static const std::array opcode_info{
 
 }  // namespace OpcodeInfo
 
+namespace {
+
+[[noreturn]] void ThrowArgumentOutOfRange() {
+    throw std::out_of_range("IR opcode argument index out of range");
+}
+
+}  // namespace
+
 Type GetTypeOf(Opcode op) {
     return OpcodeInfo::opcode_info.at(static_cast<size_t>(op)).type;
 }
 
 size_t GetNumArgsOf(Opcode op) {
-    return OpcodeInfo::opcode_info.at(static_cast<size_t>(op)).arg_types.size();
+    return OpcodeInfo::opcode_info.at(static_cast<size_t>(op)).num_args;
 }
 
 Type GetArgTypeOf(Opcode op, size_t arg_index) {
-    return OpcodeInfo::opcode_info.at(static_cast<size_t>(op)).arg_types.at(arg_index);
+    const auto& info = OpcodeInfo::opcode_info.at(static_cast<size_t>(op));
+    if (arg_index >= info.num_args) {
+        ThrowArgumentOutOfRange();
+    }
+    return info.arg_types[arg_index];
 }
 
 std::string GetNameOf(Opcode op) {
