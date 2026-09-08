@@ -10,6 +10,7 @@
 
 #ifdef __linux__
 
+#    include <atomic>
 #    include <cstdio>
 #    include <cstdlib>
 #    include <mutex>
@@ -24,6 +25,7 @@ namespace Dynarmic::Backend::X64 {
 namespace {
 std::mutex mutex;
 std::FILE* file = nullptr;
+std::atomic<bool> file_open = false;
 
 void OpenFile() {
     const char* perf_dir = std::getenv("PERF_BUILDID_DIR");
@@ -41,8 +43,15 @@ void OpenFile() {
     }
 
     std::setvbuf(file, nullptr, _IONBF, 0);
+    file_open.store(true, std::memory_order_relaxed);
 }
 }  // anonymous namespace
+
+bool PerfMapEnabled() {
+    // An already opened map remains active until Clear, even if the
+    // environment changes. The file itself is only accessed under mutex.
+    return file_open.load(std::memory_order_relaxed) || std::getenv("PERF_BUILDID_DIR") != nullptr;
+}
 
 namespace detail {
 void PerfMapRegister(const void* start, const void* end, std::string_view friendly_name) {
@@ -74,6 +83,7 @@ void PerfMapClear() {
 
     std::fclose(file);
     file = nullptr;
+    file_open.store(false, std::memory_order_relaxed);
     OpenFile();
 }
 
@@ -82,6 +92,10 @@ void PerfMapClear() {
 #else
 
 namespace Dynarmic::Backend::X64 {
+
+bool PerfMapEnabled() {
+    return false;
+}
 
 namespace detail {
 void PerfMapRegister(const void*, const void*, std::string_view) {}

@@ -347,7 +347,9 @@ Xbyak::Label EmitX64::EmitCond(
 }
 
 EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& descriptor, CodePtr entrypoint, size_t size) {
-    PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+    if (PerfMapEnabled()) {
+        PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+    }
     if (ShouldPatchExistingBlocks()) {
         Patch(descriptor, entrypoint);
     }
@@ -373,8 +375,12 @@ void EmitX64::EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial
 }
 
 void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    const auto patches = patch_information.find(target_desc);
+    if (patches == patch_information.end()) {
+        return;
+    }
     const CodePtr save_code_ptr = code.getCurr();
-    const PatchInformation& patch_info = patch_information[target_desc];
+    const PatchInformation& patch_info = patches->second;
 
     for (CodePtr location : patch_info.jg) {
         code.SetCodePtr(location);
@@ -400,9 +406,7 @@ void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_co
 }
 
 void EmitX64::Unpatch(const IR::LocationDescriptor& target_desc) {
-    if (patch_information.count(target_desc)) {
-        Patch(target_desc, nullptr);
-    }
+    Patch(target_desc, nullptr);
 }
 
 void EmitX64::ClearCache() {

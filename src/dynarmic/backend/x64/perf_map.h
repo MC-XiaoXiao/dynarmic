@@ -11,6 +11,9 @@
 
 namespace Dynarmic::Backend::X64 {
 
+// Check before constructing per-block names when optional perf output is off.
+bool PerfMapEnabled();
+
 namespace detail {
 void PerfMapRegister(const void* start, const void* end, std::string_view friendly_name);
 }  // namespace detail
