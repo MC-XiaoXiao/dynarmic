@@ -225,12 +225,15 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
         for (const auto& location : locations) {
             Unpatch(location);
         }
+        std::vector<RetiredRange> retired_ranges;
+        retired_ranges.reserve(locations.size());
         for (const auto& location : locations) {
             if (const auto block = GetBasicBlock(location)) {
-                const auto* const begin = reinterpret_cast<const u8*>(block->entrypoint);
-                ForgetPatchLocations(begin, begin + block->size);
+                const auto begin = reinterpret_cast<std::uintptr_t>(block->entrypoint);
+                retired_ranges.emplace_back(begin, begin + block->size);
             }
         }
+        ForgetPatchLocations(std::move(retired_ranges));
         for (const auto& location : locations) {
             block_descriptors.erase(location);
         }
@@ -249,7 +252,7 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     }
 
     tsl::robin_set<IR::LocationDescriptor> locations;
-    std::vector<std::pair<const u8*, const u8*>> retired_ranges;
+    std::vector<RetiredRange> retired_ranges;
     std::uint64_t code_bytes{};
     auto entrypoint = blocks_by_entrypoint.lower_bound(first);
     while (entrypoint != blocks_by_entrypoint.end() &&
@@ -257,7 +260,7 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
         const auto location = entrypoint->second;
         if (const auto block = GetBasicBlock(location)) {
             code_bytes += block->size;
-            const auto* const block_begin = reinterpret_cast<const u8*>(block->entrypoint);
+            const auto block_begin = reinterpret_cast<std::uintptr_t>(block->entrypoint);
             retired_ranges.emplace_back(
                 block_begin, block_begin + block->size);
         }
@@ -274,9 +277,7 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
         block_descriptors.erase(location);
     }
 
-    for (const auto& [range_begin, range_end] : retired_ranges) {
-        ForgetPatchLocations(range_begin, range_end);
-    }
+    ForgetPatchLocations(std::move(retired_ranges));
 
     for (auto it = fastmem_patch_info.begin();
          it != fastmem_patch_info.end();) {
@@ -303,33 +304,38 @@ void A32EmitX64::PatchPublishedTarget(
     Patch(location, entrypoint);
 }
 
-void A32EmitX64::ForgetPatchLocations(const void* begin, const void* end) {
-    const auto first = reinterpret_cast<std::uintptr_t>(begin);
-    const auto last = reinterpret_cast<std::uintptr_t>(end);
-    if (first >= last) {
+void A32EmitX64::ForgetPatchLocations(std::vector<RetiredRange> ranges) {
+    std::erase_if(ranges, [](const auto& range) { return range.first >= range.second; });
+    if (ranges.empty()) {
         return;
     }
-
-    std::vector<IR::LocationDescriptor> targets;
-    targets.reserve(patch_information.size());
-    for (const auto& [target, patches] : patch_information) {
-        static_cast<void>(patches);
-        targets.push_back(target);
+    std::sort(ranges.begin(), ranges.end());
+    // Retire an exact union of source ranges in one patch-table pass. A
+    // per-block scan is quadratic during segment rotation and prevents the
+    // executor from returning to its cooperative host boundary.
+    std::size_t merged = 0;
+    for (const auto range : ranges) {
+        if (merged != 0 && range.first <= ranges[merged - 1].second) {
+            ranges[merged - 1].second = std::max(ranges[merged - 1].second, range.second);
+        } else {
+            ranges[merged++] = range;
+        }
     }
-
-    std::vector<IR::LocationDescriptor> empty_targets;
-    const auto forget = [first, last](std::vector<CodePtr>& locations) {
-        std::erase_if(locations, [first, last](CodePtr location) {
-            const auto address = reinterpret_cast<std::uintptr_t>(location);
-            return address >= first && address < last;
-        });
+    ranges.resize(merged);
+    const auto retired = [&ranges](CodePtr location) {
+        const auto address = reinterpret_cast<std::uintptr_t>(location);
+        auto next = std::upper_bound(ranges.begin(), ranges.end(), address,
+            [](std::uintptr_t value, const RetiredRange& range) { return value < range.first; });
+        return next != ranges.begin() && address < std::prev(next)->second;
     };
-    for (const auto& target : targets) {
-        auto& patches = patch_information[target];
-        forget(patches.jg);
-        forget(patches.jz);
-        forget(patches.jmp);
-        forget(patches.mov_rcx);
+    std::vector<IR::LocationDescriptor> empty_targets;
+    for (auto entry = patch_information.begin(); entry != patch_information.end(); ++entry) {
+        auto& patches = entry.value();
+        const auto& target = entry.key();
+        std::erase_if(patches.jg, retired);
+        std::erase_if(patches.jz, retired);
+        std::erase_if(patches.jmp, retired);
+        std::erase_if(patches.mov_rcx, retired);
         if (patches.jg.empty() && patches.jz.empty() && patches.jmp.empty() && patches.mov_rcx.empty()) {
             empty_targets.push_back(target);
         }
