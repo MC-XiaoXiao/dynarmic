@@ -473,6 +473,10 @@ void A32EmitX64::GenTerminalHandlers() {
         code.mov(qword[rbp + offsetof(FastDispatchEntry, location_descriptor)], rbx);
         code.LookupBlock();
         code.mov(ptr[rbp + offsetof(FastDispatchEntry, code_ptr)], rax);
+        // Translation callbacks may request a host stop. Publish the valid
+        // cache entry before leaving, but do not execute its Guest block.
+        code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
+        code.jne(code.GetForceReturnFromRunCodeAddress());
         code.jmp(rax);
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
 
