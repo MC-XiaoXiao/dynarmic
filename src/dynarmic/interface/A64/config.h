@@ -95,6 +95,11 @@ struct UserCallbacks {
     virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
     virtual Vector MemoryRead128(VAddr vaddr) = 0;
 
+    // Shared x64 exclusive-access emission permits clients to revoke raw
+    // memory access before acquiring the global reservation monitor.
+    virtual void MemoryReadExclusive(VAddr, std::size_t) {}
+    virtual void MemoryWriteExclusiveBegin(VAddr, std::size_t) {}
+
     // Writes through these callbacks may not be aligned.
     virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
     virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;

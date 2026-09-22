@@ -150,6 +150,10 @@ Jit::Jit(UserConfig conf)
 
 Jit::~Jit() = default;
 
+void Jit::PrepareRun() {
+    // Coordinated native memory leases are currently an x64 capability.
+}
+
 HaltReason Jit::Run() {
     return impl->Run();
 }

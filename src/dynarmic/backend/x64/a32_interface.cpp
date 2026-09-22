@@ -321,7 +321,7 @@ struct NativeCodeSlab::Impl {
     void initialize(A32::UserConfig config, A32::Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared) {
         std::lock_guard lock{mutex};
         if (initialized) {
-            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.always_little_endian != conf->always_little_endian) {
+            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.enable_host_execution_block_budget != conf->enable_host_execution_block_budget || config.always_little_endian != conf->always_little_endian) {
                 throw std::invalid_argument{
                     "native code slab configuration mismatch"};
             }
@@ -1006,6 +1006,30 @@ struct Jit::Impl {
         }
     }
 
+    void PrepareRun() {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        const auto generation = native_code_slab->generation();
+        const auto descriptor = jit_state.GetUniqueHash();
+        const auto codeptr = GetCurrentBlock(generation);
+        // Install the hint under the same lock as range invalidation. A range
+        // can retire a block without changing the slab generation, so checking
+        // the generation alone would allow publishing an already retired RSB.
+        std::lock_guard lock{native_code_slab->impl->mutex};
+        NativeCodeSlab::BlockDescriptor current;
+        if (!native_code_slab->find_block(descriptor, generation, current) ||
+            current.entrypoint != codeptr)
+            return;
+        // No active-execution pin survives the caller's preparation barrier.
+        if (observed_generation != generation)
+            jit_state.ResetRSB();
+        const auto index = jit_state.rsb_ptr & A32JitState::RSBPtrMask;
+        jit_state.rsb_location_descriptors[index] = descriptor;
+        jit_state.rsb_codeptrs[index] = reinterpret_cast<u64>(codeptr);
+        jit_state.rsb_ptr = (index + 1U) & A32JitState::RSBPtrMask;
+        observed_generation = generation;
+    }
+
     HaltReason Run() {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
@@ -1037,8 +1061,11 @@ struct Jit::Impl {
             return GetCurrentBlock(execution_generation);
         }();
 
-        const HaltReason hr = native_code_slab->run_code(
-            &jit_state, current_codeptr);
+        const HaltReason hr = [&] {
+            conf.callbacks->MemoryExecutionResume();
+            SCOPE_EXIT { conf.callbacks->MemoryExecutionSuspend(); };
+            return native_code_slab->run_code(&jit_state, current_codeptr);
+        }();
 
         PerformRequestedCacheInvalidation(hr);
 
@@ -1063,8 +1090,12 @@ struct Jit::Impl {
                 &jit_state, execution_generation);
         };
 
-        const HaltReason hr = native_code_slab->step_code(
-            &jit_state, GetCurrentSingleStep(execution_generation));
+        const auto codeptr = GetCurrentSingleStep(execution_generation);
+        const HaltReason hr = [&] {
+            conf.callbacks->MemoryExecutionResume();
+            SCOPE_EXIT { conf.callbacks->MemoryExecutionSuspend(); };
+            return native_code_slab->step_code(&jit_state, codeptr);
+        }();
 
         PerformRequestedCacheInvalidation(hr);
 
@@ -1084,7 +1115,7 @@ struct Jit::Impl {
         return HostExecutionBudgetResult{
             initial - remaining,
             jit_state.host_execution_budget_exhausted != 0,
-            true,
+            conf.enable_host_execution_block_budget,
         };
     }
 
@@ -1323,6 +1354,13 @@ private:
 
     NativeCodeSlab::BlockDescriptor GetBasicBlock(
         IR::LocationDescriptor descriptor, std::uint64_t generation) {
+        struct MemoryLookupScope {
+            A32::UserCallbacks* callbacks;
+            explicit MemoryLookupScope(A32::UserCallbacks* value) : callbacks{value} {
+                callbacks->MemoryExecutionSuspend();
+            }
+            ~MemoryLookupScope() { callbacks->MemoryExecutionResume(); }
+        } memory_lookup_scope{conf.callbacks};
         NativeCodeSlab::BlockDescriptor block;
         if (native_code_slab->find_block(
                 descriptor.Value(), generation, block)) {
@@ -1539,6 +1577,10 @@ Jit::Jit(UserConfig conf)
         : impl(std::make_unique<Impl>(this, std::move(conf))) {}
 
 Jit::~Jit() = default;
+
+void Jit::PrepareRun() {
+    impl->PrepareRun();
+}
 
 HaltReason Jit::Run() {
     return impl->Run();

@@ -118,6 +118,11 @@ struct UserCallbacks : public TranslateCallbacks {
     // reservation. This is separate from MemoryRead* so a memory backend can
     // revoke a direct-write alias before the following ordinary store.
     virtual void MemoryReadExclusive(VAddr /*vaddr*/, std::size_t /*size*/) {}
+    // Memory backends may release native-access leases before monitor locks
+    // or host block lookup. Defaults preserve existing callback contracts.
+    virtual void MemoryWriteExclusiveBegin(VAddr /*vaddr*/, std::size_t /*size*/) {}
+    virtual void MemoryExecutionSuspend() {}
+    virtual void MemoryExecutionResume() {}
 
     // Writes through these callbacks may not be aligned.
     virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
@@ -336,6 +341,10 @@ struct UserConfig {
     /// This option allows you to disable cycle counting. If this is set to false,
     /// AddTicks and GetTicksRemaining are never called, and no cycle counting is done.
     bool enable_cycle_counting = true;
+
+    // Clients that bound execution through the cycle budget can omit the
+    // second countdown. Asynchronous halt checks remain enabled.
+    bool enable_host_execution_block_budget = true;
 
     /// This option relates to the CPSR.E flag. Enabling this option disables modification
     /// of CPSR.E by the emulated program, forcing it to 0.

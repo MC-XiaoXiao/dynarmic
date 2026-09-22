@@ -379,20 +379,25 @@ void A32EmitX64::ClearFastDispatchTable() {
 
 void A32EmitX64::EmitHostExecutionBoundary(
     std::optional<std::uint32_t> return_pc) {
-    Xbyak::Label disabled;
-    code.cmp(dword[r15 + offsetof(A32JitState, host_execution_block_budget)],
-             0);
-    code.je(disabled, code.T_NEAR);
-    code.sub(dword[r15 + offsetof(A32JitState, host_execution_block_budget)],
-             1);
-    code.jne(disabled, code.T_NEAR);
-    code.mov(dword[r15 + offsetof(A32JitState, host_execution_budget_exhausted)],
-             1);
-    if (return_pc) {
-        code.mov(MJitStateReg(A32::Reg::PC), *return_pc);
+    Xbyak::Label resume, stop;
+    code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
+    if (!conf.enable_host_execution_block_budget) {
+        code.je(resume, code.T_NEAR);
+    } else {
+        code.jne(stop, code.T_NEAR);
+        code.cmp(dword[r15 + offsetof(A32JitState, host_execution_block_budget)], 0);
+        code.je(resume, code.T_NEAR);
+        code.sub(dword[r15 + offsetof(A32JitState, host_execution_block_budget)], 1);
+        code.jne(resume, code.T_NEAR);
+        code.mov(dword[r15 + offsetof(A32JitState, host_execution_budget_exhausted)], 1);
     }
-    code.jmp(code.GetReturnFromRunCodeAddress());
-    code.L(disabled);
+    code.L(stop);
+    if (return_pc)
+        code.mov(MJitStateReg(A32::Reg::PC), *return_pc);
+    // Neither a halt nor an exhausted host budget may re-enter the dispatcher
+    // while Guest cycles remain. Preserve the next PC and leave native code.
+    code.jmp(code.GetForceReturnFromRunCodeAddress());
+    code.L(resume);
 }
 
 void A32EmitX64::GenTerminalHandlers() {

@@ -143,6 +143,10 @@ public:
      */
     HaltReason Run();
 
+    /// Resolve the initial block before coordinated native execution begins.
+    /// Run revalidates the slab generation before using this cached entry.
+    void PrepareRun();
+
     /**
      * Steps the emulated CPU.
      * Cannot be recursively called.

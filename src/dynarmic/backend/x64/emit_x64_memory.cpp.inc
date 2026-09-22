@@ -320,6 +320,7 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
 
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr, T value) -> u32 {
+                conf.callbacks->MemoryWriteExclusiveBegin(vaddr, bitsize / 8U);
                 return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
                                                                     [&](T expected) -> bool {
                                                                         return (conf.callbacks->*callback)(vaddr, value, expected);
@@ -336,6 +337,7 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
         code.movaps(xword[code.ABI_PARAM3], xmm1);
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr, Vector& value) -> u32 {
+                conf.callbacks->MemoryWriteExclusiveBegin(vaddr, bitsize / 8U);
                 return conf.global_monitor->DoExclusiveOperation<Vector>(conf.processor_id, vaddr,
                                                                          [&](Vector expected) -> bool {
                                                                              return (conf.callbacks->*callback)(vaddr, value, expected);
