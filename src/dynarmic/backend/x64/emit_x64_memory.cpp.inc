@@ -12,6 +12,21 @@
 
 namespace {
 using Vector = std::array<u64, 2>;
+
+// A monitor owner may take a checked-memory lock. Keep this lane inactive
+// until that monitor has been released, then restore its native memory lease.
+class ExclusiveMemoryScope {
+public:
+    explicit ExclusiveMemoryScope(AxxUserConfig& conf)
+        : callbacks{conf.memory_execution_scope_active && *conf.memory_execution_scope_active ? conf.callbacks : nullptr} {
+        if (callbacks) callbacks->MemoryExecutionSuspend();
+    }
+    ~ExclusiveMemoryScope() { if (callbacks) callbacks->MemoryExecutionResume(); }
+    ExclusiveMemoryScope(const ExclusiveMemoryScope&) = delete;
+    ExclusiveMemoryScope& operator=(const ExclusiveMemoryScope&) = delete;
+private:
+    Axx::UserCallbacks* callbacks;
+};
 }
 
 std::optional<AxxEmitX64::DoNotFastmemMarker> AxxEmitX64::ShouldFastmem(AxxEmitContext& ctx, IR::Inst* inst) const {
@@ -241,18 +256,13 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
 
         code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
         EmitRuntimeConfigPointer(code, conf);
-        code.CallLambda(
-            [](AxxUserConfig& conf, Axx::VAddr vaddr) -> Axx::VAddr {
-                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
-                return vaddr;
-            });
-        code.mov(code.ABI_PARAM2, code.ABI_RETURN);
-        EmitRuntimeConfigPointer(code, conf);
         if (ordered) {
             code.mfence();
         }
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr) -> T {
+                ExclusiveMemoryScope scope{conf};
+                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
                 return conf.global_monitor->ReadAndMark<T>(conf.processor_id, vaddr, [&]() -> T {
                     return (conf.callbacks->*callback)(vaddr);
                 });
@@ -268,18 +278,13 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
         EmitRuntimeConfigPointer(code, conf);
         ctx.reg_alloc.AllocStackSpace(16 + ABI_SHADOW_SPACE);
         code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
-        code.CallLambda(
-            [](AxxUserConfig& conf, Axx::VAddr vaddr) -> Axx::VAddr {
-                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
-                return vaddr;
-            });
-        code.mov(code.ABI_PARAM2, code.ABI_RETURN);
-        EmitRuntimeConfigPointer(code, conf);
         if (ordered) {
             code.mfence();
         }
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr, Vector& ret) {
+                ExclusiveMemoryScope scope{conf};
+                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
                 ret = conf.global_monitor->ReadAndMark<Vector>(conf.processor_id, vaddr, [&]() -> Vector {
                     return (conf.callbacks->*callback)(vaddr);
                 });
@@ -320,6 +325,7 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
 
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr, T value) -> u32 {
+                ExclusiveMemoryScope scope{conf};
                 conf.callbacks->MemoryWriteExclusiveBegin(vaddr, bitsize / 8U);
                 return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
                                                                     [&](T expected) -> bool {
@@ -337,6 +343,7 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
         code.movaps(xword[code.ABI_PARAM3], xmm1);
         code.CallLambda(
             [](AxxUserConfig& conf, Axx::VAddr vaddr, Vector& value) -> u32 {
+                ExclusiveMemoryScope scope{conf};
                 conf.callbacks->MemoryWriteExclusiveBegin(vaddr, bitsize / 8U);
                 return conf.global_monitor->DoExclusiveOperation<Vector>(conf.processor_id, vaddr,
                                                                          [&](Vector expected) -> bool {

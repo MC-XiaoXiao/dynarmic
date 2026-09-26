@@ -99,6 +99,8 @@ struct UserCallbacks {
     // memory access before acquiring the global reservation monitor.
     virtual void MemoryReadExclusive(VAddr, std::size_t) {}
     virtual void MemoryWriteExclusiveBegin(VAddr, std::size_t) {}
+    virtual void MemoryExecutionSuspend() {}
+    virtual void MemoryExecutionResume() {}
 
     // Writes through these callbacks may not be aligned.
     virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
@@ -142,6 +144,9 @@ struct UserCallbacks {
 
 struct UserConfig {
     UserCallbacks* callbacks;
+    // Optional executor-owned flag, stable during Run/Step. Native memory
+    // leases need suspension around exclusive callbacks only while active.
+    const bool* memory_execution_scope_active = nullptr;
 
     size_t processor_id = 0;
     ExclusiveMonitor* global_monitor = nullptr;

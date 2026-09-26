@@ -121,6 +121,8 @@ struct UserCallbacks : public TranslateCallbacks {
     // Memory backends may release native-access leases before monitor locks
     // or host block lookup. Defaults preserve existing callback contracts.
     virtual void MemoryWriteExclusiveBegin(VAddr /*vaddr*/, std::size_t /*size*/) {}
+    // Balanced and nestable around block lookup and callback-based exclusive
+    // operations; Resume runs only after the reservation monitor is unlocked.
     virtual void MemoryExecutionSuspend() {}
     virtual void MemoryExecutionResume() {}
 
@@ -168,6 +170,9 @@ struct UserCallbacks : public TranslateCallbacks {
 
 struct UserConfig {
     UserCallbacks* callbacks;
+    // Optional executor-owned flag, stable during Run/Step. Native memory
+    // leases need suspension around exclusive callbacks only while active.
+    const bool* memory_execution_scope_active = nullptr;
 
     // Optional observer called when an executing Jit resolves a location to
     // an already-emitted native block in the shared slab. It is deliberately
