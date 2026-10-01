@@ -559,6 +559,8 @@ bool Inst::MayHaveSideEffects() const {
         || WritesToFPCR()
         || WritesToFPSR()
         || AltersExclusiveState()
+        // A load can fault or access a device even if its result is dead.
+        || IsMemoryRead()
         || IsMemoryWrite()
         || IsCoprocessorInstruction();
 }
