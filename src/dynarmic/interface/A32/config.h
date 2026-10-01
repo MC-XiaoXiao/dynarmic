@@ -149,6 +149,20 @@ struct UserCallbacks : public TranslateCallbacks {
     // A conservative implementation that always returns false is safe.
     virtual bool IsReadOnlyMemory(VAddr /*vaddr*/) { return false; }
 
+    // Called for a cold execute translation. False stops before any instruction.
+    virtual bool InstructionFetch(VAddr /*pc*/, std::size_t /*size*/) { return true; }
+
+    // Compile-time observation, distinct from a load performed by guest code.
+    // The width is one of 1, 2, 4, or 8 bytes.
+    virtual std::uint64_t MemoryReadConstant(VAddr vaddr, std::size_t width) {
+        switch (width) {
+        case 1: return MemoryRead8(vaddr);
+        case 2: return MemoryRead16(vaddr);
+        case 4: return MemoryRead32(vaddr);
+        default: return MemoryRead64(vaddr);
+        }
+    }
+
     /// The interpreter must execute exactly num_instructions starting from PC.
     virtual void InterpreterFallback(VAddr pc, size_t num_instructions) = 0;
 
@@ -275,6 +289,8 @@ struct UserConfig {
     /// while writes continue to use page_table. This lets immutable/COW pages
     /// take the direct read path without bypassing write callbacks.
     std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* read_page_table = nullptr;
+    // Presence tokens, never dereferenced as executable host bytes.
+    std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* instruction_page_table = nullptr;
     /// Determines if the pointer in the page_table shall be offseted locally or globally.
     /// 'false' will access page_table[addr >> bits][addr & mask]
     /// 'true'  will access page_table[addr >> bits][addr]

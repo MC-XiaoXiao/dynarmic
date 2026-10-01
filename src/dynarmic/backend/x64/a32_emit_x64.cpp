@@ -136,6 +136,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     code.align();
     const u8* const entrypoint = code.getCurr();
 
+    EmitInstructionFetch(ctx);
     EmitCondPrelude(ctx);
 
     for (auto iter = block.begin(); iter != block.end(); ++iter) {
@@ -353,6 +354,43 @@ A32EmitX64::CacheStats A32EmitX64::GetCacheStats() const noexcept {
         range_stats.invalidated_descriptors,
         retired_code_bytes,
     };
+}
+
+void A32EmitX64::EmitInstructionFetch(A32EmitContext& ctx) {
+    if (!conf.instruction_page_table)
+        return;
+    const u32 pc = ctx.Location().PC();
+    const u32 size = std::max<u32>(ctx.EndLocation().PC() - pc, ctx.Location().TFlag() ? 2 : 4);
+    Xbyak::Label cold, ready;
+    if (conf.runtime_config_link) {
+        code.mov(rax, qword[r15 + offsetof(A32JitState, runtime_config_link)]);
+        code.mov(rax, qword[rax]);
+        code.mov(rax, qword[rax + offsetof(A32::UserConfig, instruction_page_table)]);
+    } else {
+        code.mov(rax, reinterpret_cast<u64>(conf.instruction_page_table));
+    }
+    const u64 last = (static_cast<u64>(pc) + size - 1) >> A32::UserConfig::PAGE_BITS;
+    for (u64 page = pc >> A32::UserConfig::PAGE_BITS; page <= last; ++page) {
+        code.cmp(qword[rax + static_cast<u32>(page % A32::UserConfig::NUM_PAGE_TABLE_ENTRIES) * sizeof(void*)], 0);
+        code.je(cold, code.T_NEAR);
+    }
+    code.jmp(ready, code.T_NEAR);
+    code.L(cold);
+    code.SwitchMxcsrOnExit();
+    ctx.reg_alloc.HostCall(nullptr);
+    ctx.reg_alloc.EndOfAllocScope();
+    DevirtualizeFromLink<&A32::UserCallbacks::InstructionFetch>(
+        conf.callbacks, conf.callbacks_link, offsetof(A32JitState, callbacks_link))
+        .EmitCall(code, [&](RegList param) {
+            code.mov(param[0], pc);
+            code.mov(param[1], size);
+        });
+    code.SwitchMxcsrOnEntry();
+    code.test(al, al);
+    code.jnz(ready, code.T_NEAR);
+    code.mov(MJitStateReg(A32::Reg::PC), pc);
+    code.jmp(code.GetForceReturnFromRunCodeAddress());
+    code.L(ready);
 }
 
 void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {

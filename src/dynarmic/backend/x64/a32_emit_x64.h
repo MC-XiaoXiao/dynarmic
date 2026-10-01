@@ -111,6 +111,7 @@ protected:
         blocks_by_entrypoint;
     std::uint64_t retired_code_bytes{};
 
+    void EmitInstructionFetch(A32EmitContext& ctx);
     void EmitCondPrelude(const A32EmitContext& ctx);
 
     std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
