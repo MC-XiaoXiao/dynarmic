@@ -85,6 +85,9 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& 
 }
 
 void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors) {
+    if (fast_dispatch_cache) {
+        fast_dispatch_cache->Clear();
+    }
     UnprotectCodeMemory();
 
     for (const auto& descriptor : descriptors) {
@@ -105,6 +108,9 @@ void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescri
 
 void AddressSpace::ClearCache() {
     ++cache_generation;
+    if (fast_dispatch_cache) {
+        fast_dispatch_cache->Clear();
+    }
     block_entries.clear();
     reverse_block_entries.clear();
     block_infos.clear();

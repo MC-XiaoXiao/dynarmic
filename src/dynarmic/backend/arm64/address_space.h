@@ -6,6 +6,7 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <optional>
 
 #include <mcl/stdint.hpp>
@@ -15,6 +16,7 @@
 #include <tsl/robin_set.h>
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
+#include "dynarmic/backend/arm64/fast_dispatch.h"
 #include "dynarmic/backend/arm64/fastmem.h"
 #include "dynarmic/interface/halt_reason.h"
 #include "dynarmic/ir/basic_block.h"
@@ -76,6 +78,7 @@ protected:
 
     const size_t code_cache_size;
     u64 cache_generation{};
+    std::unique_ptr<FastDispatchCache> fast_dispatch_cache;
     oaknut::CodeBlock mem;
     oaknut::CodeGenerator code;
 

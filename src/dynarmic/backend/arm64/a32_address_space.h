@@ -19,6 +19,9 @@ public:
 
     IR::Block GenerateIR(IR::LocationDescriptor) const override;
 
+    using AddressSpace::GetOrEmit;
+    CodePtr GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack);
+
     void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
     void ClearCache() override;
 

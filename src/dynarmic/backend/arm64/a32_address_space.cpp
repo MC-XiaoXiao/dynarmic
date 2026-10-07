@@ -158,6 +158,9 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
         : AddressSpace(conf.code_cache_size)
         , conf(conf) {
+    if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        fast_dispatch_cache = std::make_unique<FastDispatchCache>();
+    }
     EmitPrelude();
 }
 
@@ -184,6 +187,14 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
     Optimization::VerificationPass(ir_block);
 
     return ir_block;
+}
+
+CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack) {
+    const auto entry_point = AddressSpace::GetOrEmit(descriptor, stack);
+    if (fast_dispatch_cache) {
+        fast_dispatch_cache->Publish(descriptor, entry_point);
+    }
+    return entry_point;
 }
 
 void A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
@@ -328,11 +339,32 @@ void A32AddressSpace::EmitPrelude() {
             code.B(LE, return_from_run_code);
         }
 
+        oaknut::Label lookup;
+        if (fast_dispatch_cache) {
+            // Reuse the existing dispatch boundary for all indirect branches.
+            // Hits stay in generated code; collisions use the normal compiler.
+            static_assert(offsetof(A32JitState, regs) + 16 * sizeof(u32) == offsetof(A32JitState, upper_location_descriptor));
+            code.LDUR(Xscratch0, Xstate, offsetof(A32JitState, regs) + 15 * sizeof(u32));
+            code.LSR(Xscratch1, Xscratch0, 2);
+            code.EOR(Xscratch1, Xscratch1, Xscratch0, LSR, 32);
+            code.AND(Xscratch1, Xscratch1, FastDispatchCache::index_mask);
+            code.MOV(Xscratch2, mcl::bit_cast<u64>(fast_dispatch_cache->Data()));
+            code.ADD(Xscratch1, Xscratch2, Xscratch1, LSL, 4);
+            code.LDP(X1, X2, Xscratch1);
+            code.CMP(Xscratch0, X1);
+            code.B(NE, lookup);
+            code.CBZ(X2, lookup);
+            code.BR(X2);
+        }
+        code.l(lookup);
         code.LDR(X0, l_this);
         code.MOV(X1, Xstate);
         code.MOV(X2, SP);
         code.LDR(Xscratch0, l_addr);
         code.BLR(Xscratch0);
+        // Compilation callbacks can request a stop before entering guest code.
+        code.LDAR(Wscratch0, Xhalt);
+        code.CBNZ(Wscratch0, return_from_run_code);
         code.BR(X0);
 
         const auto fn = [](A32AddressSpace& self, A32JitState& context, StackLayout& stack) -> CodePtr {
