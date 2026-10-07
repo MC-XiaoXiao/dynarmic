@@ -190,6 +190,11 @@ void A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>&
     InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
 }
 
+void A32AddressSpace::ClearCache() {
+    AddressSpace::ClearCache();
+    block_ranges.ClearCache();
+}
+
 void A32AddressSpace::EmitPrelude() {
     using namespace oaknut::util;
 
@@ -325,12 +330,13 @@ void A32AddressSpace::EmitPrelude() {
 
         code.LDR(X0, l_this);
         code.MOV(X1, Xstate);
+        code.MOV(X2, SP);
         code.LDR(Xscratch0, l_addr);
         code.BLR(Xscratch0);
         code.BR(X0);
 
-        const auto fn = [](A32AddressSpace& self, A32JitState& context) -> CodePtr {
-            return self.GetOrEmit(context.GetLocationDescriptor());
+        const auto fn = [](A32AddressSpace& self, A32JitState& context, StackLayout& stack) -> CodePtr {
+            return self.GetOrEmit(context.GetLocationDescriptor(), stack);
         };
 
         code.align(8);

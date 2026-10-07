@@ -22,6 +22,8 @@
 
 namespace Dynarmic::Backend::Arm64 {
 
+struct StackLayout;
+
 class AddressSpace {
 public:
     explicit AddressSpace(size_t code_cache_size);
@@ -38,10 +40,11 @@ public:
     CodePtr ReverseGetEntryPoint(CodePtr host_pc);
 
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor);
+    CodePtr GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack);
 
     void InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors);
 
-    void ClearCache();
+    virtual void ClearCache();
 
     void DumpDisassembly() const;
 
@@ -72,6 +75,7 @@ protected:
     FakeCall FastmemCallback(u64 host_pc);
 
     const size_t code_cache_size;
+    u64 cache_generation{};
     oaknut::CodeBlock mem;
     oaknut::CodeGenerator code;
 

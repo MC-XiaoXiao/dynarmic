@@ -70,6 +70,20 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
     return block_info.entry_point;
 }
 
+CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack) {
+    const auto generation = cache_generation;
+    const auto entry_point = GetOrEmit(descriptor);
+    if (generation != cache_generation) {
+        // A demand miss can recycle code while Run is still on the stack.
+        // Return predictions contain raw code pointers into that recycled
+        // mapping; send them through dispatch before using the new code.
+        for (auto& entry : stack.rsb) {
+            entry.code_ptr = mcl::bit_cast<u64>(prelude_info.return_to_dispatcher);
+        }
+    }
+    return entry_point;
+}
+
 void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors) {
     UnprotectCodeMemory();
 
@@ -90,6 +104,7 @@ void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescri
 }
 
 void AddressSpace::ClearCache() {
+    ++cache_generation;
     block_entries.clear();
     reverse_block_entries.clear();
     block_infos.clear();

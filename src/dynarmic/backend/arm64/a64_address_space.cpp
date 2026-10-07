@@ -354,6 +354,11 @@ void A64AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u64>&
     InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
 }
 
+void A64AddressSpace::ClearCache() {
+    AddressSpace::ClearCache();
+    block_ranges.ClearCache();
+}
+
 void A64AddressSpace::EmitPrelude() {
     using namespace oaknut::util;
 
@@ -494,12 +499,13 @@ void A64AddressSpace::EmitPrelude() {
 
         code.LDR(X0, l_this);
         code.MOV(X1, Xstate);
+        code.MOV(X2, SP);
         code.LDR(Xscratch0, l_addr);
         code.BLR(Xscratch0);
         code.BR(X0);
 
-        const auto fn = [](A64AddressSpace& self, A64JitState& context) -> CodePtr {
-            return self.GetOrEmit(context.GetLocationDescriptor());
+        const auto fn = [](A64AddressSpace& self, A64JitState& context, StackLayout& stack) -> CodePtr {
+            return self.GetOrEmit(context.GetLocationDescriptor(), stack);
         };
 
         code.align(8);
