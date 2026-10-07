@@ -243,7 +243,9 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
         }
 
         reg_alloc.UpdateAllUses();
+#ifndef NDEBUG
         reg_alloc.AssertAllUnlocked();
+#endif
 
         if (conf.very_verbose_debugging_output) {
             EmitVerboseDebuggingOutput(code, ctx);
@@ -252,7 +254,9 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
 
     fpsr_manager.Spill();
 
+#ifndef NDEBUG
     reg_alloc.AssertNoMoreUses();
+#endif
 
     EmitAddCycles(code, ctx, block.CycleCount());
     conf.emit_terminal(code, ctx);

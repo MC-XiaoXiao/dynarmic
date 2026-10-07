@@ -7,8 +7,11 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
+
+#include <boost/container/small_vector.hpp>
 
 #include <mcl/assert.hpp>
 #include <mcl/stdint.hpp>
@@ -136,7 +139,7 @@ private:
 };
 
 struct HostLocInfo final {
-    std::vector<const IR::Inst*> values;
+    boost::container::small_vector<const IR::Inst*, 2> values;
     size_t locked = 0;
     bool realized = false;
     size_t uses_this_inst = 0;
@@ -156,7 +159,7 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order)
+    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::span<const int> gpr_order, std::span<const int> fpr_order)
             : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order} {}
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
@@ -310,10 +313,10 @@ private:
     template<HostLoc::Kind kind>
     int RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value);
 
-    int AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const;
+    int AllocateRegister(const std::array<HostLocInfo, 32>& regs, std::span<const int> order) const;
     void SpillGpr(int index);
     void SpillFpr(int index);
-    int FindFreeSpill() const;
+    int FindFreeSpill();
 
     void LoadCopyInto(const IR::Value& value, oaknut::XReg reg);
     void LoadCopyInto(const IR::Value& value, oaknut::QReg reg);
@@ -324,13 +327,14 @@ private:
 
     oaknut::CodeGenerator& code;
     FpsrManager& fpsr_manager;
-    std::vector<int> gpr_order;
-    std::vector<int> fpr_order;
+    std::span<const int> gpr_order;
+    std::span<const int> fpr_order;
 
     std::array<HostLocInfo, 32> gprs;
     std::array<HostLocInfo, 32> fprs;
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
+    size_t spill_count = 0;
 
     tsl::robin_set<const IR::Inst*> defined_insts;
 };

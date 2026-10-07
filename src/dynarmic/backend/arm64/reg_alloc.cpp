@@ -222,8 +222,8 @@ void RegAlloc::UpdateAllUses() {
         fpr.UpdateUses();
     }
     flags.UpdateUses();
-    for (auto& spill : spills) {
-        spill.UpdateUses();
+    for (size_t i = 0; i < spill_count; ++i) {
+        spills[i].UpdateUses();
     }
 }
 
@@ -428,20 +428,26 @@ template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Gpr>(const IR::Value&
 template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Fpr>(const IR::Value&, const IR::Inst*);
 template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Flags>(const IR::Value&, const IR::Inst*);
 
-int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const {
+int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, std::span<const int> order) const {
     const auto empty = std::find_if(order.begin(), order.end(), [&](int i) { return regs[i].IsCompletelyEmpty(); });
     if (empty != order.end()) {
         return *empty;
     }
 
-    std::vector<int> candidates;
-    std::copy_if(order.begin(), order.end(), std::back_inserter(candidates), [&](int i) { return regs[i].MaybeAllocatable(); });
+    std::array<int, 32> candidates;
+    size_t candidate_count = 0;
+    for (int i : order) {
+        if (regs[i].MaybeAllocatable()) {
+            candidates[candidate_count++] = i;
+        }
+    }
+    ASSERT(candidate_count != 0);
 
     // TODO: LRU
     // Seed only when spilling is needed, and reuse the generator across blocks
     // compiled on this thread rather than opening the entropy source per block.
     static thread_local std::mt19937 rand_gen{std::random_device{}()};
-    std::uniform_int_distribution<size_t> dis{0, candidates.size() - 1};
+    std::uniform_int_distribution<size_t> dis{0, candidate_count - 1};
     return candidates[dis(rand_gen)];
 }
 
@@ -507,10 +513,12 @@ void RegAlloc::SpillFlags() {
     gprs[new_location_index] = std::exchange(flags, {});
 }
 
-int RegAlloc::FindFreeSpill() const {
+int RegAlloc::FindFreeSpill() {
     const auto iter = std::find_if(spills.begin(), spills.end(), [](const HostLocInfo& info) { return info.values.empty(); });
     ASSERT_MSG(iter != spills.end(), "All spill locations are full");
-    return static_cast<int>(iter - spills.begin());
+    const auto index = static_cast<size_t>(iter - spills.begin());
+    spill_count = std::max(spill_count, index + 1);
+    return static_cast<int>(index);
 }
 
 void RegAlloc::LoadCopyInto(const IR::Value& value, oaknut::XReg reg) {
