@@ -1296,6 +1296,14 @@ struct Jit::Impl {
         native_code_slab->dump_disassembly();
     }
 
+    CodeCacheLookup LookupCodeCache(u64 descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        const auto generation = native_code_slab->generation_snapshot();
+        NativeCodeSlab::BlockDescriptor block;
+        return {generation, native_code_slab->find_block(descriptor, generation, block)};
+    }
+
     u64 CodeCacheGeneration() const {
         return native_code_slab->generation_snapshot();
     }
@@ -1687,6 +1695,10 @@ void Jit::ClearExclusiveState() {
 
 void Jit::DumpDisassembly() const {
     impl->DumpDisassembly();
+}
+
+Jit::CodeCacheLookup Jit::LookupCodeCache(std::uint64_t descriptor) {
+    return impl->LookupCodeCache(descriptor);
 }
 
 std::uint64_t Jit::CodeCacheGeneration() const {

@@ -271,6 +271,15 @@ public:
     /// Returns the number of bytes currently occupied in the code cache.
     std::size_t CodeCacheUsed() const;
 
+    struct CodeCacheLookup {
+        std::uint64_t generation{};
+        bool present{};
+    };
+
+    /// Applies pending invalidation and probes without translating or emitting.
+    /// The caller must keep execution stopped. Run revalidates any later changes.
+    [[nodiscard]] CodeCacheLookup LookupCodeCache(std::uint64_t location_descriptor);
+
     /// Host-cache validity stamp for prepared IR handoff, read while stopped.
     std::uint64_t CodeCacheGeneration() const;
 

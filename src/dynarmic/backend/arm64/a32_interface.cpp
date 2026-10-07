@@ -96,6 +96,13 @@ struct Jit::Impl final {
         current_address_space.SetPortableIREmitCompletion(completion, user_arg);
     }
 
+    CodeCacheLookup LookupCodeCache(u64 descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        return {current_address_space.GetCodeCacheGeneration(),
+                current_address_space.Get(IR::LocationDescriptor{descriptor}) != nullptr};
+    }
+
     u64 CodeCacheGeneration() const {
         return current_address_space.GetCodeCacheGeneration();
     }
@@ -264,6 +271,10 @@ void Jit::SetPortableIRDemandProvider(PortableIRDemandProvider provider, void* u
 
 void Jit::SetPortableIREmitCompletion(PortableIREmitCompletion completion, void* user_arg) {
     impl->SetPortableIREmitCompletion(completion, user_arg);
+}
+
+Jit::CodeCacheLookup Jit::LookupCodeCache(std::uint64_t descriptor) {
+    return impl->LookupCodeCache(descriptor);
 }
 
 std::uint64_t Jit::CodeCacheGeneration() const {
