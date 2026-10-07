@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <random>
 
 #include <mcl/assert.hpp>
 #include <mcl/bit/bit_field.hpp>
@@ -437,6 +438,9 @@ int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const st
     std::copy_if(order.begin(), order.end(), std::back_inserter(candidates), [&](int i) { return regs[i].MaybeAllocatable(); });
 
     // TODO: LRU
+    // Seed only when spilling is needed, and reuse the generator across blocks
+    // compiled on this thread rather than opening the entropy source per block.
+    static thread_local std::mt19937 rand_gen{std::random_device{}()};
     std::uniform_int_distribution<size_t> dis{0, candidates.size() - 1};
     return candidates[dis(rand_gen)];
 }
