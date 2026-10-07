@@ -85,6 +85,11 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& 
 }
 
 void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors) {
+    // A range request can cover data or code that was never translated.
+    // Keep dispatch predictions and executable permissions in that case.
+    if (descriptors.empty()) {
+        return;
+    }
     if (fast_dispatch_cache) {
         fast_dispatch_cache->Clear();
     }
