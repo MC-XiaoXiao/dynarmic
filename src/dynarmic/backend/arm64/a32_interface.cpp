@@ -27,7 +27,9 @@ struct Jit::Impl final {
             : jit_interface(jit_interface)
             , conf(conf)
             , current_address_space(conf)
-            , core(conf) {}
+            , core(this->conf) {
+        BindExecutionContext();
+    }
 
     HaltReason Run() {
         ASSERT(!jit_interface->is_executing);
@@ -136,6 +138,7 @@ struct Jit::Impl final {
 
     void Reset() {
         current_state = {};
+        BindExecutionContext();
     }
 
     void HaltExecution(HaltReason hr) {
@@ -193,6 +196,25 @@ struct Jit::Impl final {
     }
 
 private:
+    void BindExecutionContext() {
+        current_state.callbacks_link = conf.callbacks_link;
+        current_state.lookup_link = conf.lookup_link;
+        current_state.runtime_config_link = conf.runtime_config_link;
+        current_state.fast_dispatch_table_link = conf.fast_dispatch_table_link;
+        current_state.page_table_link = conf.page_table_link;
+        current_state.read_page_table_link = conf.read_page_table_link;
+        current_state.coprocessor_user_arg_link = conf.coprocessor_user_arg_link;
+        if (conf.lookup_link) {
+            conf.lookup_link->store(reinterpret_cast<u64>(&current_address_space), std::memory_order_release);
+        }
+        if (conf.runtime_config_link) {
+            conf.runtime_config_link->store(reinterpret_cast<u64>(&conf), std::memory_order_release);
+        }
+        if (conf.fast_dispatch_table_link) {
+            conf.fast_dispatch_table_link->store(reinterpret_cast<u64>(current_address_space.FastDispatchTableStorage()), std::memory_order_release);
+        }
+    }
+
     void PerformRequestedCacheInvalidation(HaltReason hr) {
         if (Has(hr, HaltReason::CacheInvalidation)) {
             std::unique_lock lock{invalidation_mutex};

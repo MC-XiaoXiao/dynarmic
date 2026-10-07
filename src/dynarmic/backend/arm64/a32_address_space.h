@@ -32,6 +32,10 @@ public:
     void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
     void ClearCache() override;
 
+    void* FastDispatchTableStorage() const {
+        return fast_dispatch_cache ? fast_dispatch_cache->Data() : nullptr;
+    }
+
 protected:
     friend class A32Core;
 

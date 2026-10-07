@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 
 #include <mcl/stdint.hpp>
 
@@ -30,6 +31,16 @@ struct A32JitState {
     alignas(16) std::array<u32, 64> ext_regs{};
 
     u32 exclusive_state = 0;
+
+    // Executor-owned links keep generated callbacks and dispatch code from
+    // capturing the first executor's mutable runtime state.
+    const std::atomic<u64>* callbacks_link = nullptr;
+    const std::atomic<u64>* lookup_link = nullptr;
+    const std::atomic<u64>* runtime_config_link = nullptr;
+    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
+    const std::atomic<u64>* page_table_link = nullptr;
+    const std::atomic<u64>* read_page_table_link = nullptr;
+    const std::atomic<u64>* coprocessor_user_arg_link = nullptr;
 
     u32 Cpsr() const;
     void SetCpsr(u32 cpsr);

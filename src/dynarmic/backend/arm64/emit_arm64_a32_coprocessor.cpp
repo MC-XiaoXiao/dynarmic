@@ -27,7 +27,12 @@ static void CallCoprocCallback(oaknut::CodeGenerator& code, EmitContext& ctx, A3
     ctx.reg_alloc.PrepareForCall({}, arg0, arg1);
 
     if (callback.user_arg) {
-        code.MOV(X0, reinterpret_cast<u64>(*callback.user_arg));
+        if (ctx.conf.coprocessor_user_arg_linked && *callback.user_arg != nullptr) {
+            code.LDR(X0, Xstate, offsetof(A32JitState, coprocessor_user_arg_link));
+            code.LDAR(X0, X0);
+        } else {
+            code.MOV(X0, reinterpret_cast<u64>(*callback.user_arg));
+        }
     }
 
     code.MOV(Xscratch0, reinterpret_cast<u64>(callback.function));
