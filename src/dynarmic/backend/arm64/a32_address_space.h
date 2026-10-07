@@ -29,7 +29,7 @@ public:
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor) override;
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack);
 
-    void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
+    tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
     void ClearCache() override;
 
     HaltReason RunCode(CodePtr entry, void* state, volatile u32* halt, bool step) const {

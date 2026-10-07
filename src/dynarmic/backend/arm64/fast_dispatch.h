@@ -29,10 +29,22 @@ public:
     void Clear() { entries.fill({}); }
     void Publish(IR::LocationDescriptor descriptor, std::byte* code) {
         const u64 value = descriptor.Value();
-        entries[((value >> 2) ^ (value >> 32)) & index_mask] = {value, code};
+        entries[Index(value)] = {value, code};
+    }
+    // A colliding descriptor may already occupy the same slot. Retire only
+    // the exact tag that the authoritative code index invalidated.
+    static void Invalidate(Entry* table, IR::LocationDescriptor descriptor) {
+        const u64 value = descriptor.Value();
+        auto& entry = table[Index(value)];
+        if (entry.descriptor == value)
+            entry = {};
     }
 
 private:
+    static constexpr size_t Index(u64 descriptor) {
+        return ((descriptor >> 2) ^ (descriptor >> 32)) & index_mask;
+    }
+
     std::array<Entry, entry_count> entries{};
 };
 

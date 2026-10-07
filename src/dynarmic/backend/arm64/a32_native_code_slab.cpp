@@ -153,8 +153,13 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
             clear_pending = false;
             generation_changed.notify_all();
         } else if (!pending_ranges.empty()) {
-            clear_executor_tables();
-            emitter->InvalidateCacheRanges(pending_ranges);
+            const auto locations = emitter->InvalidateCacheRanges(pending_ranges);
+            for (const auto& executor : executors) {
+                if (executor.table) {
+                    for (const auto descriptor : locations)
+                        FastDispatchCache::Invalidate(executor.table, descriptor);
+                }
+            }
             pending_ranges.clear();
             generation_changed.notify_all();
         }

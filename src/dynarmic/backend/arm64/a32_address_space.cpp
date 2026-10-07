@@ -322,13 +322,15 @@ CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayou
     return entry_point;
 }
 
-void A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
+tsl::robin_set<IR::LocationDescriptor> A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
     if (!ranges.empty()) {
         // Prepared IR must not cross a requested executable-range mutation,
         // even when that range has no native block in this executor yet.
         ++cache_generation;
     }
-    InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
+    auto locations = block_ranges.InvalidateRanges(ranges);
+    InvalidateBasicBlocks(locations);
+    return locations;
 }
 
 void A32AddressSpace::ClearCache() {
