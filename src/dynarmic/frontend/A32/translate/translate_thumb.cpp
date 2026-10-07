@@ -67,7 +67,12 @@ std::optional<std::tuple<u32, ThumbInstSize>> ReadThumbInstruction(u32 arm_pc, T
 
     instruction <<= 16;
 
-    const std::optional<u32> second_part = tcb->MemoryReadCode((arm_pc + 2) & 0xFFFFFFFC);
+    // Aligned Thumb-2 instructions already have both halfwords in first_part.
+    // Only fetch again when the instruction spans two aligned words.
+    const u32 second_address = (arm_pc + 2) & 0xFFFFFFFC;
+    const std::optional<u32> second_part = second_address == (arm_pc & 0xFFFFFFFC)
+        ? first_part
+        : tcb->MemoryReadCode(second_address);
     if (!second_part)
         return std::nullopt;
 
