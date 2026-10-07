@@ -34,6 +34,7 @@ struct A32JitState {
 
     // Executor-owned links keep generated callbacks and dispatch code from
     // capturing the first executor's mutable runtime state.
+    volatile u32* halt_reason = nullptr;
     const std::atomic<u64>* callbacks_link = nullptr;
     const std::atomic<u64>* lookup_link = nullptr;
     const std::atomic<u64>* runtime_config_link = nullptr;

@@ -386,6 +386,9 @@ if ("arm64" IN_LIST ARCHITECTURE)
         target_architecture_specific_sources(dynarmic "arm64"
             backend/arm64/a32_address_space.cpp
             backend/arm64/a32_address_space.h
+            backend/arm64/a32_ir_translator.cpp
+            backend/arm64/a32_ir_translator.h
+            backend/arm64/a32_native_code_slab.cpp
             backend/arm64/a32_core.h
             backend/arm64/a32_interface.cpp
         )

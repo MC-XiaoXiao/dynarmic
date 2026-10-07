@@ -165,6 +165,7 @@ struct EmitConfig {
     // A32 specific
     std::array<std::shared_ptr<A32::Coprocessor>, 16> coprocessors{};
     bool coprocessor_user_arg_linked = false;
+    bool shared_native_code = false;
 
     // Debugging
     bool very_verbose_debugging_output;

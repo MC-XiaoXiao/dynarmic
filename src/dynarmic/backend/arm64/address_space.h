@@ -79,6 +79,7 @@ protected:
 
     FakeCall FastmemCallback(u64 host_pc);
 
+    bool defer_block_linking = false;
     const size_t code_cache_size;
     u64 cache_generation{};
     std::unique_ptr<FastDispatchCache> fast_dispatch_cache;

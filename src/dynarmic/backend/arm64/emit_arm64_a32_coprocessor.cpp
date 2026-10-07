@@ -4,6 +4,7 @@
  */
 
 #include <oaknut/oaknut.hpp>
+#include <stdexcept>
 
 #include "dynarmic/backend/arm64/a32_jitstate.h"
 #include "dynarmic/backend/arm64/abi.h"
@@ -99,6 +100,8 @@ void EmitIR<IR::Opcode::A32CoprocSendOneWord>(oaknut::CodeGenerator& code, EmitC
     }
 
     if (const auto destination_ptr = std::get_if<u32*>(&action)) {
+        if (ctx.conf.shared_native_code)
+            throw std::invalid_argument{"shared ARM64 coprocessor state requires linked callbacks"};
         auto Wvalue = ctx.reg_alloc.ReadW(args[1]);
         RegAlloc::Realize(Wvalue);
 
@@ -140,6 +143,8 @@ void EmitIR<IR::Opcode::A32CoprocSendTwoWords>(oaknut::CodeGenerator& code, Emit
     }
 
     if (const auto destination_ptrs = std::get_if<std::array<u32*, 2>>(&action)) {
+        if (ctx.conf.shared_native_code)
+            throw std::invalid_argument{"shared ARM64 coprocessor state requires linked callbacks"};
         auto Wvalue1 = ctx.reg_alloc.ReadW(args[1]);
         auto Wvalue2 = ctx.reg_alloc.ReadW(args[2]);
         RegAlloc::Realize(Wvalue1, Wvalue2);
@@ -185,6 +190,8 @@ void EmitIR<IR::Opcode::A32CoprocGetOneWord>(oaknut::CodeGenerator& code, EmitCo
     }
 
     if (const auto source_ptr = std::get_if<u32*>(&action)) {
+        if (ctx.conf.shared_native_code)
+            throw std::invalid_argument{"shared ARM64 coprocessor state requires linked callbacks"};
         auto Wvalue = ctx.reg_alloc.WriteW(inst);
         RegAlloc::Realize(Wvalue);
 
@@ -224,6 +231,8 @@ void EmitIR<IR::Opcode::A32CoprocGetTwoWords>(oaknut::CodeGenerator& code, EmitC
     }
 
     if (const auto source_ptrs = std::get_if<std::array<u32*, 2>>(&action)) {
+        if (ctx.conf.shared_native_code)
+            throw std::invalid_argument{"shared ARM64 coprocessor state requires linked callbacks"};
         auto Xvalue = ctx.reg_alloc.WriteX(inst);
         RegAlloc::Realize(Xvalue);
 

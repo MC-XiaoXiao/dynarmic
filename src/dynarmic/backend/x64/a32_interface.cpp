@@ -27,6 +27,7 @@
 #include <mcl/scope_exit.hpp>
 #include <mcl/stdint.hpp>
 
+#include "dynarmic/backend/native_code_slab_lifetime.h"
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/block_of_code.h"
@@ -44,19 +45,7 @@
 namespace Dynarmic::A32 {
 
 using namespace Backend::X64;
-
-[[nodiscard]] static std::uint32_t InclusiveRangeEnd(
-    std::uint32_t start_address, std::size_t length) noexcept {
-    ASSERT(length != 0);
-    const auto offset = static_cast<std::uint64_t>(length - 1U);
-    const auto maximum = static_cast<std::uint64_t>(
-        std::numeric_limits<std::uint32_t>::max());
-    if (offset > maximum - start_address) {
-        return std::numeric_limits<std::uint32_t>::max();
-    }
-    return static_cast<std::uint32_t>(
-        static_cast<std::uint64_t>(start_address) + offset);
-}
+using Backend::InclusiveRangeEnd;
 
 template<auto callback>
 static std::unique_ptr<Callback> GenRuntimeCallback(
@@ -159,13 +148,8 @@ enum class TestEmitFailure : std::uint8_t {
 }
 #endif
 
-struct NativeCodeSlab::Impl {
+struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState, A32EmitX64::FastDispatchEntry> {
     using BlockDescriptor = NativeCodeSlab::BlockDescriptor;
-
-    enum class GenerationTransitionKind {
-        RecycleSegment,
-        ClearAll,
-    };
 
     struct CodeSegment {
         u8* begin{};
@@ -362,18 +346,6 @@ struct NativeCodeSlab::Impl {
         initialized = true;
     }
 
-    [[nodiscard]] std::uint64_t generation() const {
-        std::unique_lock lock{mutex};
-        generation_changed.wait(lock, [this] {
-            return !clear_pending && pending_ranges.empty();
-        });
-        return current_generation;
-    }
-
-    [[nodiscard]] std::uint64_t generation_snapshot() const noexcept {
-        return published_generation.load(std::memory_order_acquire);
-    }
-
     [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
                                   std::uint64_t expected_generation,
                                   BlockDescriptor& result) const {
@@ -402,7 +374,7 @@ struct NativeCodeSlab::Impl {
     }
 
     [[nodiscard]] BlockDescriptor emit(
-        IR::Block& block, std::uint64_t expected_generation) {
+        IR::Block& block, std::uint64_t expected_generation, const UserConfig* = nullptr) {
         std::lock_guard lock{mutex};
 #if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
         if (test_emit_failure == TestEmitFailure::Generation && !test_emit_failure_injected) {
@@ -466,42 +438,8 @@ struct NativeCodeSlab::Impl {
         block_of_code->EnsureMemoryCommitted(codesize);
     }
 
-    void register_executor(void* storage, void* jit_state) {
-        if (storage == nullptr || jit_state == nullptr)
-            return;
-        std::lock_guard lock{mutex};
-        auto* const table = static_cast<A32EmitX64::FastDispatchEntry*>(
-            storage);
-        auto* const state = static_cast<A32JitState*>(jit_state);
-        const auto existing = std::find_if(
-            executors.begin(), executors.end(),
-            [table, state](const Executor& executor) {
-                return executor.table == table || executor.state == state;
-            });
-        if (existing == executors.end()) {
-            executors.push_back(Executor{table, state});
-        }
-    }
-
-    void unregister_executor(void* storage, void* jit_state) {
-        if (storage == nullptr || jit_state == nullptr)
-            return;
-        std::lock_guard lock{mutex};
-        auto* const table = static_cast<A32EmitX64::FastDispatchEntry*>(
-            storage);
-        auto* const state = static_cast<A32JitState*>(jit_state);
-        const auto existing = std::find_if(
-            executors.begin(), executors.end(),
-            [table, state](const Executor& executor) {
-                return executor.table == table && executor.state == state;
-            });
-        if (existing == executors.end())
-            return;
-        if (existing->active) {
-            throw std::logic_error{
-                "cannot unregister an active native code slab executor"};
-        }
-        executors.erase(existing);
+    void halt_executor(A32JitState& state) {
+        Atomic::Or(&state.halt_reason, static_cast<u32>(HaltReason::CacheInvalidation));
     }
 
     void clear_executor_fast_dispatch_tables() {
@@ -608,95 +546,6 @@ struct NativeCodeSlab::Impl {
         generation_changed.notify_all();
     }
 
-    void request_generation_transition(GenerationTransitionKind kind,
-                                       bool finish = true) {
-        if (!clear_pending) {
-            clear_pending = true;
-            pending_generation = current_generation + 1;
-            pending_transition = kind;
-            if (kind == GenerationTransitionKind::ClearAll) {
-                pending_ranges.clear();
-            }
-        } else if (kind == GenerationTransitionKind::ClearAll) {
-            pending_transition = kind;
-            pending_ranges.clear();
-        }
-        for (const auto& executor : executors) {
-            if (executor.active) {
-                Atomic::Or(&executor.state->halt_reason,
-                           static_cast<u32>(HaltReason::CacheInvalidation));
-            }
-        }
-        if (finish)
-            finish_pending_invalidation();
-    }
-
-    void clear_cache() {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        request_generation_transition(GenerationTransitionKind::ClearAll);
-    }
-
-    void recycle_cache() {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        request_generation_transition(
-            GenerationTransitionKind::RecycleSegment);
-    }
-
-    void request_range_transition(std::uint32_t start_address,
-                                  std::size_t length,
-                                  bool finish = true) {
-        if (length == 0 || (clear_pending && pending_transition == GenerationTransitionKind::ClearAll)) {
-            return;
-        }
-        const auto last_address = InclusiveRangeEnd(start_address, length);
-        pending_ranges.add(boost::icl::discrete_interval<u32>::closed(
-            start_address, last_address));
-        for (const auto& executor : executors) {
-            if (executor.active) {
-                Atomic::Or(&executor.state->halt_reason,
-                           static_cast<u32>(HaltReason::CacheInvalidation));
-            }
-        }
-        if (finish)
-            finish_pending_invalidation();
-    }
-
-    void invalidate_cache_range(std::uint32_t start_address,
-                                std::size_t length) {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        request_range_transition(start_address, length);
-    }
-
-    void request_cache_clear() {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        request_generation_transition(
-            GenerationTransitionKind::ClearAll, false);
-    }
-
-    void request_cache_range(std::uint32_t start_address,
-                             std::size_t length) {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        request_range_transition(start_address, length, false);
-    }
-
-    void service_pending_invalidation() {
-        std::lock_guard lock{mutex};
-        if (!initialized)
-            return;
-        finish_pending_invalidation();
-        finish_pending_direct_link_publication();
-    }
-
     [[nodiscard]] HaltReason run_code(void* jit_state,
                                       const void* code_ptr) const {
         {
@@ -759,59 +608,11 @@ struct NativeCodeSlab::Impl {
         return block_of_code->HasHostFeature(HostFeature::SHA);
     }
 
-    [[nodiscard]] std::uint64_t enter_execution(void* jit_state) {
-        std::unique_lock lock{mutex};
-        generation_changed.wait(lock, [this] {
-            return !clear_pending && pending_ranges.empty();
-        });
-        finish_pending_direct_link_publication();
-        auto* const state = static_cast<A32JitState*>(jit_state);
-        const auto executor = std::find_if(
-            executors.begin(), executors.end(),
-            [state](const Executor& candidate) {
-                return candidate.state == state;
-            });
-        if (executor == executors.end() || executor->active) {
-            throw std::logic_error{
-                "native code slab executor registration mismatch"};
-        }
-        executor->active = true;
-        executor->generation = current_generation;
-        ++active_executions;
-        return current_generation;
-    }
-
-    void leave_execution(void* jit_state, std::uint64_t generation) {
-        std::lock_guard lock{mutex};
-        auto* const state = static_cast<A32JitState*>(jit_state);
-        const auto executor = std::find_if(
-            executors.begin(), executors.end(),
-            [state](const Executor& candidate) {
-                return candidate.state == state;
-            });
-        if (executor == executors.end() || !executor->active || executor->generation != generation || generation != current_generation || active_executions == 0) {
-            throw std::logic_error{"native code slab execution underflow"};
-        }
-        executor->active = false;
-        --active_executions;
-        finish_pending_invalidation();
-        finish_pending_direct_link_publication();
-    }
-
-    struct Executor {
-        A32EmitX64::FastDispatchEntry* table{};
-        A32JitState* state{};
-        std::uint64_t generation{};
-        bool active{};
-    };
-
-    mutable std::recursive_mutex mutex;
     std::optional<A32::UserConfig> conf;
     std::unique_ptr<A32EmitX64::FastDispatchEntry[]>
         owned_fast_dispatch_table;
     std::unique_ptr<BlockOfCode> block_of_code;
     std::unique_ptr<A32EmitX64> emitter;
-    std::vector<Executor> executors;
     mutable std::vector<CodeSegment> code_segments;
     Optimization::PolyfillOptions polyfill_options{};
     std::size_t code_cache_size{};
@@ -819,142 +620,20 @@ struct NativeCodeSlab::Impl {
     std::size_t regular_segment_bytes{};
     std::size_t current_segment{};
     std::size_t live_allocated_code_bytes{};
-    std::size_t active_executions{};
     mutable std::uint64_t segment_touch_clock{};
     std::uint64_t segment_recycles{};
     std::uint64_t recycled_descriptors{};
     std::uint64_t recycled_code_bytes{};
     std::uint64_t full_generation_clears{};
-    std::uint64_t current_generation{1};
-    std::atomic<std::uint64_t> published_generation{1};
-    std::uint64_t pending_generation{1};
-    boost::icl::interval_set<u32> pending_ranges;
     tsl::robin_set<IR::LocationDescriptor> pending_direct_link_targets;
-    bool initialized{};
     bool shared_mode{};
-    bool clear_pending{};
-    GenerationTransitionKind pending_transition{
-        GenerationTransitionKind::ClearAll};
 #if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
     TestEmitFailure test_emit_failure{TestEmitFailure::None};
     bool test_emit_failure_injected{};
 #endif
-    mutable std::condition_variable_any generation_changed;
 };
 
-NativeCodeSlab::NativeCodeSlab() : impl{std::make_unique<Impl>()} {}
-
-NativeCodeSlab::~NativeCodeSlab() = default;
-
-void NativeCodeSlab::initialize(
-    UserConfig conf, Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared_mode) {
-    impl->initialize(std::move(conf), jit_interface, jit_state, lookup,
-                     lookup_arg, shared_mode);
-}
-
-std::uint64_t NativeCodeSlab::generation() const {
-    return impl->generation();
-}
-
-std::uint64_t NativeCodeSlab::generation_snapshot() const noexcept {
-    return impl->generation_snapshot();
-}
-
-bool NativeCodeSlab::find_block(
-    std::uint64_t location_descriptor, std::uint64_t expected_generation, BlockDescriptor& result) const {
-    return impl->find_block(
-        location_descriptor, expected_generation, result);
-}
-
-NativeCodeSlab::BlockDescriptor NativeCodeSlab::emit(
-    IR::Block& block, std::uint64_t expected_generation) {
-    return impl->emit(block, expected_generation);
-}
-
-std::size_t NativeCodeSlab::space_remaining() const {
-    return impl->space_remaining();
-}
-
-void NativeCodeSlab::ensure_memory_committed(std::size_t codesize) {
-    impl->ensure_memory_committed(codesize);
-}
-
-void NativeCodeSlab::register_executor(void* storage, void* jit_state) {
-    impl->register_executor(storage, jit_state);
-}
-
-void NativeCodeSlab::unregister_executor(void* storage, void* jit_state) {
-    impl->unregister_executor(storage, jit_state);
-}
-
-void NativeCodeSlab::clear_cache() {
-    impl->clear_cache();
-}
-
-void NativeCodeSlab::recycle_cache() {
-    impl->recycle_cache();
-}
-
-void NativeCodeSlab::invalidate_cache_range(
-    std::uint32_t start_address, std::size_t length) {
-    impl->invalidate_cache_range(start_address, length);
-}
-
-void NativeCodeSlab::request_cache_clear() {
-    impl->request_cache_clear();
-}
-
-void NativeCodeSlab::request_cache_range(
-    std::uint32_t start_address, std::size_t length) {
-    impl->request_cache_range(start_address, length);
-}
-
-void NativeCodeSlab::service_pending_invalidation() {
-    impl->service_pending_invalidation();
-}
-
-HaltReason NativeCodeSlab::run_code(void* jit_state,
-                                    const void* code_ptr) const {
-    return impl->run_code(jit_state, code_ptr);
-}
-
-HaltReason NativeCodeSlab::step_code(void* jit_state,
-                                     const void* code_ptr) const {
-    return impl->step_code(jit_state, code_ptr);
-}
-
-const void* NativeCodeSlab::return_from_run_code() const {
-    return impl->return_from_run_code();
-}
-
-std::size_t NativeCodeSlab::code_cache_used() const {
-    return impl->code_cache_used();
-}
-
-NativeCodeSlab::CacheStats NativeCodeSlab::GetCacheStats() const {
-    return impl->GetCacheStats();
-}
-
-void NativeCodeSlab::dump_disassembly() const {
-    impl->dump_disassembly();
-}
-
-std::vector<std::string> NativeCodeSlab::disassemble() const {
-    return impl->disassemble();
-}
-
-bool NativeCodeSlab::has_host_feature_sha() const {
-    return impl->has_host_feature_sha();
-}
-
-std::uint64_t NativeCodeSlab::enter_execution(void* jit_state) {
-    return impl->enter_execution(jit_state);
-}
-
-void NativeCodeSlab::leave_execution(
-    void* jit_state, std::uint64_t generation) {
-    impl->leave_execution(jit_state, generation);
-}
+#include "dynarmic/backend/native_code_slab_interface.inc"
 
 struct Jit::Impl {
     Impl(Jit* jit, A32::UserConfig conf)

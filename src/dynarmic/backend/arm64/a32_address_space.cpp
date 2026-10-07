@@ -7,8 +7,10 @@
 
 #include <atomic>
 #include <utility>
+#include <mcl/scope_exit.hpp>
 
 #include "dynarmic/backend/arm64/a32_jitstate.h"
+#include "dynarmic/backend/arm64/a32_ir_translator.h"
 #include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
 #include "dynarmic/backend/arm64/abi.h"
 #include "dynarmic/backend/arm64/devirtualize.h"
@@ -219,9 +221,12 @@ static void EmitMemoryBases(oaknut::CodeGenerator& code, const A32::UserConfig& 
     }
 }
 
-A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
+A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*), void* lookup_arg)
         : AddressSpace(conf.code_cache_size)
-        , conf(conf) {
+        , conf(conf)
+        , shared_lookup(lookup)
+        , shared_lookup_arg(lookup_arg) {
+    defer_block_linking = lookup != nullptr;
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         fast_dispatch_cache = std::make_unique<FastDispatchCache>();
     }
@@ -245,28 +250,7 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
 }
 
 IR::Block A32AddressSpace::TranslateIR(IR::LocationDescriptor descriptor) const {
-    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
-
-    Optimization::PolyfillPass(ir_block, {});
-    Optimization::NamingPass(ir_block);
-    if (conf.HasOptimization(OptimizationFlag::GetSetElimination)) {
-        Optimization::A32GetSetElimination(ir_block,
-            {.convert_nzc_to_nz = true,
-                .preserve_state_at_memory_access =
-                    conf.check_halt_on_memory_access});
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-        Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
-        Optimization::ConstantPropagation(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    Optimization::IdentityRemovalPass(ir_block);
-    // Get/set elimination can insert new values after the first naming pass.
-    Optimization::NamingPass(ir_block);
-    Optimization::VerificationPass(ir_block);
-
-    return ir_block;
+    return TranslateA32IR(conf, descriptor);
 }
 
 void A32AddressSpace::CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept {
@@ -520,10 +504,10 @@ void A32AddressSpace::EmitPrelude() {
         code.align(8);
         if (!conf.lookup_link) {
             code.l(l_this);
-            code.dx(mcl::bit_cast<u64>(this));
+            code.dx(mcl::bit_cast<u64>(shared_lookup ? shared_lookup_arg : this));
         }
         code.l(l_addr);
-        code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+        code.dx(shared_lookup ? mcl::bit_cast<u64>(shared_lookup) : mcl::bit_cast<u64>(Common::FptrCast(fn)));
     }
 
     prelude_info.return_from_run_code = code.xptr<void*>();
@@ -557,6 +541,13 @@ void A32AddressSpace::EmitPrelude() {
 
     mem.invalidate_all();
     ProtectCodeMemory();
+}
+
+A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::EmitShared(IR::Block& block, const A32::UserConfig& source) {
+    emission_source = &source;
+    SCOPE_EXIT { emission_source = nullptr; };
+    const auto& emitted = Emit(block);
+    return {emitted.entry_point, emitted.size};
 }
 
 EmitConfig A32AddressSpace::GetEmitConfig() {
@@ -611,8 +602,9 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .state_fpsr_offset = offsetof(A32JitState, fpsr),
         .state_exclusive_state_offset = offsetof(A32JitState, exclusive_state),
 
-        .coprocessors = conf.coprocessors,
+        .coprocessors = emission_source ? emission_source->coprocessors : conf.coprocessors,
         .coprocessor_user_arg_linked = conf.coprocessor_user_arg_link != nullptr,
+        .shared_native_code = emission_source != nullptr,
 
         .very_verbose_debugging_output = conf.very_verbose_debugging_output,
     };
@@ -623,6 +615,11 @@ void A32AddressSpace::RegisterNewBasicBlock(const IR::Block& block, const Emitte
     const A32::LocationDescriptor end_location{block.EndLocation()};
     const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), end_location.PC() - 1);
     block_ranges.AddRange(range, descriptor);
+}
+
+A32::NativeCodeSlab::CacheStats A32AddressSpace::SharedCacheStats() const {
+    const auto stats = block_ranges.GetStats();
+    return {stats.range_count, stats.descriptor_count, stats.invalidated_descriptors};
 }
 
 }  // namespace Dynarmic::Backend::Arm64

@@ -164,7 +164,8 @@ EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
     ASSERT(block_infos.insert({block_info.entry_point, block_info}).second);
 
     Link(block_info);
-    RelinkForDescriptor(block.Location(), block_info.entry_point);
+    if (!defer_block_linking)
+        RelinkForDescriptor(block.Location(), block_info.entry_point);
 
     mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point), block_info.size);
     ProtectCodeMemory();

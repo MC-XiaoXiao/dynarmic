@@ -15,6 +15,8 @@
 #include "dynarmic/backend/arm64/a32_address_space.h"
 #include "dynarmic/backend/arm64/a32_core.h"
 #include "dynarmic/backend/arm64/a32_jitstate.h"
+#include "dynarmic/backend/arm64/a32_ir_translator.h"
+#include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/interface/A32/a32.h"
 
@@ -24,11 +26,23 @@ using namespace Backend::Arm64;
 
 struct Jit::Impl final {
     Impl(Jit* jit_interface, A32::UserConfig conf)
-            : jit_interface(jit_interface)
-            , conf(conf)
-            , current_address_space(conf)
-            , core(this->conf) {
+            : jit_interface(jit_interface), conf(std::move(conf)), core(this->conf) {
+        if (this->conf.native_code_slab) {
+            shared_slab = this->conf.native_code_slab;
+            if (this->conf.HasOptimization(OptimizationFlag::FastDispatch))
+                shared_fast_dispatch = std::make_unique<FastDispatchCache>();
+            shared_slab->initialize(this->conf, jit_interface, &current_state, &LookupSharedThunk, this, true);
+        } else {
+            current_address_space = std::make_unique<A32AddressSpace>(this->conf);
+        }
         BindExecutionContext();
+        if (shared_slab)
+            shared_slab->register_executor(FastDispatchStorage(), &current_state);
+    }
+
+    ~Impl() {
+        if (shared_slab)
+            shared_slab->unregister_executor(FastDispatchStorage(), &current_state);
     }
 
     HaltReason Run() {
@@ -40,7 +54,7 @@ struct Jit::Impl final {
             jit_interface->is_executing = false;
         };
 
-        HaltReason hr = core.Run(current_address_space, current_state, &halt_reason);
+        HaltReason hr = shared_slab ? ExecuteShared(false) : core.Run(*current_address_space, current_state, &halt_reason);
 
         PerformRequestedCacheInvalidation(hr);
 
@@ -56,7 +70,7 @@ struct Jit::Impl final {
             jit_interface->is_executing = false;
         };
 
-        HaltReason hr = core.Step(current_address_space, current_state, &halt_reason);
+        HaltReason hr = shared_slab ? ExecuteShared(true) : core.Step(*current_address_space, current_state, &halt_reason);
 
         PerformRequestedCacheInvalidation(hr);
 
@@ -67,18 +81,20 @@ struct Jit::Impl final {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
         const IR::LocationDescriptor location{descriptor};
-        if (current_address_space.Get(location)) {
+        if (shared_slab)
+            return GetSharedBlock(location, shared_slab->generation()).newly_emitted;
+        if (current_address_space->Get(location)) {
             return false;
         }
-        current_address_space.GetOrEmit(location);
-        return current_address_space.Get(location) != nullptr;
+        current_address_space->GetOrEmit(location);
+        return current_address_space->Get(location) != nullptr;
     }
 
     void GeneratePortableIR(u64 descriptor) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
         const auto started = std::chrono::steady_clock::now();
-        auto block = current_address_space.TranslateIR(IR::LocationDescriptor{descriptor});
+        auto block = TranslateA32IR(conf, IR::LocationDescriptor{descriptor});
         const auto elapsed = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - started).count());
         conf.callbacks->PortableIRGenerated(descriptor, elapsed, block);
@@ -87,32 +103,57 @@ struct Jit::Impl final {
     PortableIREmitOutcome PrecompileWithResult(IR::Block block) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
-        return current_address_space.Precompile(block);
+        if (shared_slab) {
+            if (!block.HasTerminal()) return PortableIREmitOutcome::EmitFailed;
+            try {
+                const auto emitted = shared_slab->emit(block, shared_slab->generation(), conf);
+                if (!emitted.entrypoint) return PortableIREmitOutcome::EmitFailed;
+                return emitted.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent;
+            } catch (...) {
+                shared_slab->request_cache_clear();
+                shared_slab->service_pending_invalidation();
+                return PortableIREmitOutcome::EmitFailed;
+            }
+        }
+        return current_address_space->Precompile(block);
     }
 
     void SetPortableIRDemandProvider(PortableIRDemandProvider provider, void* user_arg) {
-        current_address_space.SetPortableIRDemandProvider(provider, user_arg);
+        portable_provider = provider;
+        portable_provider_arg = user_arg;
+        if (current_address_space) current_address_space->SetPortableIRDemandProvider(provider, user_arg);
     }
 
     void SetPortableIREmitCompletion(PortableIREmitCompletion completion, void* user_arg) {
-        current_address_space.SetPortableIREmitCompletion(completion, user_arg);
+        portable_completion = completion;
+        portable_completion_arg = user_arg;
+        if (current_address_space) current_address_space->SetPortableIREmitCompletion(completion, user_arg);
     }
 
     CodeCacheLookup LookupCodeCache(u64 descriptor) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
-        return {current_address_space.GetCodeCacheGeneration(),
-                current_address_space.Get(IR::LocationDescriptor{descriptor}) != nullptr};
+        if (shared_slab) {
+            const auto generation = shared_slab->generation_snapshot();
+            NativeCodeSlab::BlockDescriptor block;
+            return {generation, shared_slab->find_block(descriptor, generation, block)};
+        }
+        return {current_address_space->GetCodeCacheGeneration(),
+                current_address_space->Get(IR::LocationDescriptor{descriptor}) != nullptr};
     }
 
     void PrepareRun() {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
-        current_address_space.GetOrEmit(current_state.GetLocationDescriptor());
+        if (shared_slab) {
+            GetSharedBlock(current_state.GetLocationDescriptor(), shared_slab->generation());
+        } else {
+            current_address_space->GetOrEmit(current_state.GetLocationDescriptor());
+        }
     }
 
     u64 CodeCacheGeneration() const {
-        return current_address_space.GetCodeCacheGeneration();
+        return shared_slab ? shared_slab->generation_snapshot() : current_address_space->GetCodeCacheGeneration();
     }
 
     void SetHostExecutionBlockBudget(std::uint32_t) noexcept {}
@@ -192,11 +233,88 @@ struct Jit::Impl final {
     }
 
     size_t CodeCacheUsed() const {
-        return current_address_space.GetCodeCacheUsed();
+        return shared_slab ? shared_slab->code_cache_used() : current_address_space->GetCodeCacheUsed();
     }
 
 private:
+    static const void* LookupSharedThunk(void* arg) {
+        auto& self = *static_cast<Impl*>(arg);
+        return self.GetSharedBlock(self.current_state.GetLocationDescriptor(), self.active_generation).entrypoint;
+    }
+
+    HaltReason ExecuteShared(bool step) {
+        const auto generation = shared_slab->enter_execution(&current_state);
+        active_generation = generation;
+        SCOPE_EXIT {
+            active_generation = 0;
+            shared_slab->leave_execution(&current_state, generation);
+        };
+        auto location = current_state.GetLocationDescriptor();
+        if (step) location = A32::LocationDescriptor{location}.SetSingleStepping(true);
+        const auto block = GetSharedBlock(location, generation);
+        auto* const callbacks = GetA32RuntimeCallbacks(conf);
+        callbacks->MemoryExecutionResume();
+        SCOPE_EXIT { callbacks->MemoryExecutionSuspend(); };
+        return step ? shared_slab->step_code(&current_state, block.entrypoint)
+                    : shared_slab->run_code(&current_state, block.entrypoint);
+    }
+
+    NativeCodeSlab::BlockDescriptor GetSharedBlock(IR::LocationDescriptor descriptor, u64 generation) {
+        const A32MemoryExecutionPause pause{conf};
+        NativeCodeSlab::BlockDescriptor existing;
+        if (shared_slab->find_block(descriptor.Value(), generation, existing)) {
+            if (shared_fast_dispatch && active_generation != 0) shared_fast_dispatch->Publish(descriptor, reinterpret_cast<CodePtr>(const_cast<void*>(existing.entrypoint)));
+            if (jit_interface->is_executing && conf.native_code_block_lookup_callback)
+                conf.native_code_block_lookup_callback(conf.native_code_block_lookup_callback_arg, descriptor.Value());
+            return existing;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        auto* prepared = portable_provider ? portable_provider(portable_provider_arg, descriptor.Value(), generation) : nullptr;
+        bool completed = false;
+        const auto complete = [&](PortableIREmitOutcome outcome) {
+            if (prepared && !completed) {
+                completed = true;
+                if (portable_completion) portable_completion(portable_completion_arg, descriptor.Value(), generation, outcome);
+            }
+        };
+        if (prepared && (prepared->Location() != descriptor || !prepared->HasTerminal())) {
+            complete(PortableIREmitOutcome::EmitFailed);
+            prepared = nullptr;
+        }
+        if (shared_slab->space_remaining() < 1024U * 1024U) {
+            complete(PortableIREmitOutcome::EmitFailed);
+            shared_slab->recycle_cache();
+            return {shared_slab->return_from_run_code(), 0, generation};
+        }
+        NativeCodeSlab::BlockDescriptor emitted;
+        try {
+            auto ir = prepared ? std::move(*prepared) : TranslateA32IR(conf, descriptor);
+            emitted = shared_slab->emit(ir, generation, conf);
+            if (emitted.entrypoint) {
+                complete(emitted.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent);
+                if (!prepared && emitted.newly_emitted)
+                    GetA32RuntimeCallbacks(conf)->CodeTranslationCompleted(descriptor.Value(),
+                        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()), ir);
+            } else {
+                complete(PortableIREmitOutcome::EmitFailed);
+            }
+        } catch (...) {
+            complete(PortableIREmitOutcome::EmitFailed);
+            shared_slab->request_cache_clear();
+            if (!prepared) throw;
+        }
+        if (!emitted.entrypoint)
+            return {shared_slab->return_from_run_code(), 0, generation};
+        if (shared_fast_dispatch && active_generation != 0) shared_fast_dispatch->Publish(descriptor, reinterpret_cast<CodePtr>(const_cast<void*>(emitted.entrypoint)));
+        return emitted;
+    }
+
+    void* FastDispatchStorage() const {
+        return shared_slab ? (shared_fast_dispatch ? shared_fast_dispatch->Data() : nullptr)
+                           : current_address_space->FastDispatchTableStorage();
+    }
     void BindExecutionContext() {
+        current_state.halt_reason = &halt_reason;
         current_state.callbacks_link = conf.callbacks_link;
         current_state.lookup_link = conf.lookup_link;
         current_state.runtime_config_link = conf.runtime_config_link;
@@ -205,24 +323,26 @@ private:
         current_state.read_page_table_link = conf.read_page_table_link;
         current_state.coprocessor_user_arg_link = conf.coprocessor_user_arg_link;
         if (conf.lookup_link) {
-            conf.lookup_link->store(reinterpret_cast<u64>(&current_address_space), std::memory_order_release);
+            conf.lookup_link->store(reinterpret_cast<u64>(shared_slab ? static_cast<void*>(this) : static_cast<void*>(current_address_space.get())), std::memory_order_release);
         }
         if (conf.runtime_config_link) {
             conf.runtime_config_link->store(reinterpret_cast<u64>(&conf), std::memory_order_release);
         }
         if (conf.fast_dispatch_table_link) {
-            conf.fast_dispatch_table_link->store(reinterpret_cast<u64>(current_address_space.FastDispatchTableStorage()), std::memory_order_release);
+            conf.fast_dispatch_table_link->store(reinterpret_cast<u64>(FastDispatchStorage()), std::memory_order_release);
         }
     }
 
     void PerformRequestedCacheInvalidation(HaltReason hr) {
+        SCOPE_EXIT { if (shared_slab) shared_slab->service_pending_invalidation(); };
         if (Has(hr, HaltReason::CacheInvalidation)) {
             std::unique_lock lock{invalidation_mutex};
 
             ClearHalt(HaltReason::CacheInvalidation);
 
             if (invalidate_entire_cache) {
-                current_address_space.ClearCache();
+                if (shared_slab) shared_slab->request_cache_clear();
+                else current_address_space->ClearCache();
 
                 invalidate_entire_cache = false;
                 invalid_cache_ranges.clear();
@@ -230,7 +350,10 @@ private:
             }
 
             if (!invalid_cache_ranges.empty()) {
-                current_address_space.InvalidateCacheRanges(invalid_cache_ranges);
+                if (shared_slab) {
+                    for (const auto& range : invalid_cache_ranges)
+                        shared_slab->request_cache_range(range.lower(), static_cast<size_t>(range.upper() - range.lower()) + 1);
+                } else current_address_space->InvalidateCacheRanges(invalid_cache_ranges);
 
                 invalid_cache_ranges.clear();
                 return;
@@ -241,7 +364,14 @@ private:
     Jit* jit_interface;
     A32::UserConfig conf;
     A32JitState current_state{};
-    A32AddressSpace current_address_space;
+    std::unique_ptr<A32AddressSpace> current_address_space;
+    NativeCodeSlab* shared_slab{};
+    std::unique_ptr<FastDispatchCache> shared_fast_dispatch;
+    u64 active_generation{};
+    PortableIRDemandProvider portable_provider{};
+    void* portable_provider_arg{};
+    PortableIREmitCompletion portable_completion{};
+    void* portable_completion_arg{};
     A32Core core;
 
     volatile u32 halt_reason = 0;

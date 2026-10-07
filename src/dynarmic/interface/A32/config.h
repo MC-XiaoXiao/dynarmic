@@ -199,6 +199,8 @@ struct UserConfig {
     // Optional shared immutable native-code slab. The first Jit using a slab
     // initializes its host prelude and emitter; later Jits reuse published
     // blocks while retaining executor-local state and dispatch tables.
+    // ARM64 requires coprocessor state access through linked callbacks;
+    // direct per-executor coprocessor pointers remain supported by local Jits.
     NativeCodeSlab* native_code_slab = nullptr;
 
     // Optional executor-owned indirection used by generated host callbacks.

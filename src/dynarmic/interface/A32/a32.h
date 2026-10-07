@@ -77,6 +77,11 @@ public:
                                   BlockDescriptor& result) const;
     [[nodiscard]] BlockDescriptor emit(IR::Block& block,
                                        std::uint64_t expected_generation);
+    // The frontend supplies its live compilation context; the shared emitter
+    // must not ask a retired executor's coprocessor to compile an operation.
+    [[nodiscard]] BlockDescriptor emit(IR::Block& block,
+                                       std::uint64_t expected_generation,
+                                       const UserConfig& runtime_config);
     [[nodiscard]] std::size_t space_remaining() const;
     void ensure_memory_committed(std::size_t codesize);
     void register_executor(void* storage, void* jit_state);

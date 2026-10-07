@@ -18,7 +18,7 @@ struct EmittedBlockInfo;
 
 class A32AddressSpace final : public AddressSpace {
 public:
-    explicit A32AddressSpace(const A32::UserConfig& conf);
+    explicit A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*) = nullptr, void* lookup_arg = nullptr);
 
     IR::Block GenerateIR(IR::LocationDescriptor) const override;
     IR::Block TranslateIR(IR::LocationDescriptor) const;
@@ -31,6 +31,19 @@ public:
 
     void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
     void ClearCache() override;
+
+    HaltReason RunCode(CodePtr entry, void* state, volatile u32* halt, bool step) const {
+        return (step ? prelude_info.step_code : prelude_info.run_code)(entry, state, halt);
+    }
+    CodePtr ReturnFromRunCode() const { return static_cast<CodePtr>(prelude_info.return_from_run_code); }
+    A32::NativeCodeSlab::BlockDescriptor EmitShared(IR::Block& block, const A32::UserConfig& source);
+    size_t SpaceRemaining() { return GetRemainingSize(); }
+    void PublishLinks(IR::LocationDescriptor descriptor) {
+        UnprotectCodeMemory();
+        RelinkForDescriptor(descriptor, Get(descriptor));
+        ProtectCodeMemory();
+    }
+    A32::NativeCodeSlab::CacheStats SharedCacheStats() const;
 
     void* FastDispatchTableStorage() const {
         return fast_dispatch_cache ? fast_dispatch_cache->Data() : nullptr;
@@ -48,6 +61,9 @@ protected:
     BlockRangeInformation<u32> block_ranges;
 
 private:
+    const A32::UserConfig* emission_source{};
+    const void* (*shared_lookup)(void*){};
+    void* shared_lookup_arg{};
     void CompletePortableEmit(A32::Jit::PortableIREmitOutcome outcome) const noexcept;
     A32::Jit::PortableIRDemandProvider portable_provider{};
     void* portable_provider_arg{};
