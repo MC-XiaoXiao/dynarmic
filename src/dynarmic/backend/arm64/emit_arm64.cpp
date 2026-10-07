@@ -15,6 +15,7 @@
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/opcodes.h"
+#include "dynarmic/ir/opt/passes.h"
 
 namespace Dynarmic::Backend::Arm64 {
 
@@ -198,8 +199,12 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
 
     EmittedBlockInfo ebi;
 
+    // Blocks from either frontend (or imported IR) may have gained new values
+    // during optimization; define a unique dense index for every emitted value.
+    Optimization::NamingPass(block);
+    const size_t instruction_count = block.empty() ? 1 : static_cast<size_t>(block.back().GetName()) + 1;
     FpsrManager fpsr_manager{code, conf.state_fpsr_offset};
-    RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER};
+    RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER, instruction_count};
     EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}};
 
     ebi.entry_point = code.xptr<CodePtr>();

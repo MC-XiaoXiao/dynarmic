@@ -17,7 +17,6 @@
 #include <mcl/stdint.hpp>
 #include <mcl/type_traits/is_instance_of_template.hpp>
 #include <oaknut/oaknut.hpp>
-#include <tsl/robin_set.h>
 
 #include "dynarmic/backend/arm64/stack_layout.h"
 #include "dynarmic/ir/cond.h"
@@ -159,8 +158,8 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::span<const int> gpr_order, std::span<const int> fpr_order)
-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order} {}
+    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::span<const int> gpr_order, std::span<const int> fpr_order, size_t instruction_count)
+            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, defined_insts((instruction_count + 63) / 64, 0) {}
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     bool WasValueDefined(IR::Inst* inst) const;
@@ -336,7 +335,15 @@ private:
     std::array<HostLocInfo, SpillCount> spills;
     size_t spill_count = 0;
 
-    tsl::robin_set<const IR::Inst*> defined_insts;
+    void MarkValueDefined(const IR::Inst* inst) {
+        const size_t name = inst->GetName();
+        ASSERT(name / 64 < defined_insts.size());
+        defined_insts[name / 64] |= u64{1} << (name % 64);
+    }
+
+    // EmitArm64 assigns dense names after all IR transforms. Small blocks keep
+    // their definition bits inline without allocating or hashing IR pointers.
+    boost::container::small_vector<u64, 4> defined_insts;
 };
 
 template<typename T>

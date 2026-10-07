@@ -142,7 +142,9 @@ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
 }
 
 bool RegAlloc::WasValueDefined(IR::Inst* inst) const {
-    return defined_insts.count(inst) > 0;
+    const size_t name = inst->GetName();
+    ASSERT(name / 64 < defined_insts.size());
+    return (defined_insts[name / 64] & (u64{1} << (name % 64))) != 0;
 }
 
 void RegAlloc::PrepareForCall(std::optional<Argument::copyable_reference> arg0, std::optional<Argument::copyable_reference> arg1, std::optional<Argument::copyable_reference> arg2, std::optional<Argument::copyable_reference> arg3) {
@@ -190,7 +192,7 @@ void RegAlloc::PrepareForCall(std::optional<Argument::copyable_reference> arg0, 
 }
 
 void RegAlloc::DefineAsExisting(IR::Inst* inst, Argument& arg) {
-    defined_insts.insert(inst);
+    MarkValueDefined(inst);
 
     ASSERT(!ValueLocation(inst));
 
@@ -205,7 +207,7 @@ void RegAlloc::DefineAsExisting(IR::Inst* inst, Argument& arg) {
 }
 
 void RegAlloc::DefineAsRegister(IR::Inst* inst, oaknut::Reg reg) {
-    defined_insts.insert(inst);
+    MarkValueDefined(inst);
 
     ASSERT(!ValueLocation(inst));
     auto& info = reg.is_vector() ? fprs[reg.index()] : gprs[reg.index()];
@@ -374,7 +376,7 @@ int RegAlloc::RealizeReadImpl(const IR::Value& value) {
 
 template<HostLoc::Kind kind>
 int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
-    defined_insts.insert(value);
+    MarkValueDefined(value);
 
     ASSERT(!ValueLocation(value));
 
@@ -399,7 +401,7 @@ int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
 
 template<HostLoc::Kind kind>
 int RegAlloc::RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value) {
-    defined_insts.insert(write_value);
+    MarkValueDefined(write_value);
 
     // TODO: Move elimination
 
@@ -472,7 +474,10 @@ void RegAlloc::SpillFpr(int index) {
 }
 
 void RegAlloc::ReadWriteFlags(Argument& read, IR::Inst* write) {
-    defined_insts.insert(write);
+    // ADC/SBC may consume flags without producing a flag pseudo-operation.
+    if (write) {
+        MarkValueDefined(write);
+    }
 
     const auto current_location = ValueLocation(read.value.GetInst());
     ASSERT(current_location);
@@ -584,7 +589,8 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
     if (contains_value(flags)) {
         return HostLoc{HostLoc::Kind::Flags, 0};
     }
-    if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != spills.end()) {
+    const auto spill_end = spills.begin() + spill_count;
+    if (const auto iter = std::find_if(spills.begin(), spill_end, contains_value); iter != spill_end) {
         return HostLoc{HostLoc::Kind::Spill, static_cast<int>(iter - spills.begin())};
     }
     return std::nullopt;
@@ -616,7 +622,8 @@ HostLocInfo& RegAlloc::ValueInfo(const IR::Inst* value) {
     if (contains_value(flags)) {
         return flags;
     }
-    if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != spills.end()) {
+    const auto spill_end = spills.begin() + spill_count;
+    if (const auto iter = std::find_if(spills.begin(), spill_end, contains_value); iter != spill_end) {
         return *iter;
     }
     ASSERT_FALSE("RegAlloc::ValueInfo: Value not found");
