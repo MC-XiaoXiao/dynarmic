@@ -6,6 +6,7 @@
 #include "dynarmic/backend/arm64/a32_address_space.h"
 
 #include <atomic>
+#include <utility>
 
 #include "dynarmic/backend/arm64/a32_jitstate.h"
 #include "dynarmic/backend/arm64/abi.h"
@@ -184,6 +185,22 @@ A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
 }
 
 IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
+    if (portable_provider) {
+        const auto generation = GetCodeCacheGeneration();
+        if (auto* block = portable_provider(portable_provider_arg, descriptor.Value(), generation)) {
+            portable_emit = std::pair{descriptor.Value(), generation};
+            if (block->Location() == descriptor && block->HasTerminal()) {
+                return std::move(*block);
+            }
+            // Invalid optional input has not touched native code and may
+            // fall back to the ordinary translator.
+            CompletePortableEmit(A32::Jit::PortableIREmitOutcome::EmitFailed);
+        }
+    }
+    return TranslateIR(descriptor);
+}
+
+IR::Block A32AddressSpace::TranslateIR(IR::LocationDescriptor descriptor) const {
     IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
 
     Optimization::PolyfillPass(ir_block, {});
@@ -209,18 +226,78 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
 }
 
 void A32AddressSpace::CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept {
-    conf.callbacks->CodeTranslationCompleted(block.Location().Value(), translation_nanoseconds, block);
+    if (portable_emit) {
+        CompletePortableEmit(A32::Jit::PortableIREmitOutcome::NativeEmitted);
+    } else {
+        conf.callbacks->CodeTranslationCompleted(block.Location().Value(), translation_nanoseconds, block);
+    }
+}
+
+void A32AddressSpace::SetPortableIRDemandProvider(A32::Jit::PortableIRDemandProvider provider, void* user_arg) {
+    portable_provider = provider;
+    portable_provider_arg = user_arg;
+}
+
+void A32AddressSpace::SetPortableIREmitCompletion(A32::Jit::PortableIREmitCompletion completion, void* user_arg) {
+    portable_completion = completion;
+    portable_completion_arg = user_arg;
+}
+
+void A32AddressSpace::CompletePortableEmit(A32::Jit::PortableIREmitOutcome outcome) const noexcept {
+    const auto pending = std::exchange(portable_emit, std::nullopt);
+    if (pending && portable_completion) {
+        portable_completion(portable_completion_arg, pending->first, pending->second, outcome);
+    }
+}
+
+CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
+    try {
+        return AddressSpace::GetOrEmit(descriptor);
+    } catch (...) {
+        if (!portable_emit) {
+            throw;
+        }
+        CompletePortableEmit(A32::Jit::PortableIREmitOutcome::EmitFailed);
+        // An emitter may have written code or metadata before throwing.
+        // Retire it before returning to the host; never translate over a
+        // partially emitted artifact in the same attempt.
+        ClearCache();
+        ProtectCodeMemory();
+        return static_cast<CodePtr>(prelude_info.return_from_run_code);
+    }
+}
+
+A32::Jit::PortableIREmitOutcome A32AddressSpace::Precompile(IR::Block& block) {
+    if (!block.HasTerminal()) {
+        return A32::Jit::PortableIREmitOutcome::EmitFailed;
+    }
+    if (Get(block.Location())) {
+        return A32::Jit::PortableIREmitOutcome::AlreadyPresent;
+    }
+    try {
+        Emit(block);
+        return A32::Jit::PortableIREmitOutcome::NativeEmitted;
+    } catch (...) {
+        ClearCache();
+        ProtectCodeMemory();
+        return A32::Jit::PortableIREmitOutcome::EmitFailed;
+    }
 }
 
 CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack) {
     const auto entry_point = AddressSpace::GetOrEmit(descriptor, stack);
-    if (fast_dispatch_cache) {
+    if (fast_dispatch_cache && entry_point != prelude_info.return_from_run_code) {
         fast_dispatch_cache->Publish(descriptor, entry_point);
     }
     return entry_point;
 }
 
 void A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
+    if (!ranges.empty()) {
+        // Prepared IR must not cross a requested executable-range mutation,
+        // even when that range has no native block in this executor yet.
+        ++cache_generation;
+    }
     InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
 }
 

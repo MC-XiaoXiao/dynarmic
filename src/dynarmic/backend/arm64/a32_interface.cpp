@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -60,6 +61,45 @@ struct Jit::Impl final {
         return hr;
     }
 
+    bool Precompile(u64 descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        const IR::LocationDescriptor location{descriptor};
+        if (current_address_space.Get(location)) {
+            return false;
+        }
+        current_address_space.GetOrEmit(location);
+        return current_address_space.Get(location) != nullptr;
+    }
+
+    void GeneratePortableIR(u64 descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        const auto started = std::chrono::steady_clock::now();
+        auto block = current_address_space.TranslateIR(IR::LocationDescriptor{descriptor});
+        const auto elapsed = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count());
+        conf.callbacks->PortableIRGenerated(descriptor, elapsed, block);
+    }
+
+    PortableIREmitOutcome PrecompileWithResult(IR::Block block) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        return current_address_space.Precompile(block);
+    }
+
+    void SetPortableIRDemandProvider(PortableIRDemandProvider provider, void* user_arg) {
+        current_address_space.SetPortableIRDemandProvider(provider, user_arg);
+    }
+
+    void SetPortableIREmitCompletion(PortableIREmitCompletion completion, void* user_arg) {
+        current_address_space.SetPortableIREmitCompletion(completion, user_arg);
+    }
+
+    u64 CodeCacheGeneration() const {
+        return current_address_space.GetCodeCacheGeneration();
+    }
+
     void SetHostExecutionBlockBudget(std::uint32_t) noexcept {}
 
     HostExecutionBudgetResult GetHostExecutionBudgetResult() const noexcept {
@@ -73,6 +113,9 @@ struct Jit::Impl final {
     }
 
     void InvalidateCacheRange(std::uint32_t start_address, std::size_t length) {
+        if (length == 0) {
+            return;
+        }
         std::unique_lock lock{invalidation_mutex};
         invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(start_address, static_cast<u32>(start_address + length - 1)));
         HaltExecution(HaltReason::CacheInvalidation);
@@ -197,6 +240,34 @@ void Jit::SetHostExecutionBlockBudget(std::uint32_t block_budget) {
 Jit::HostExecutionBudgetResult
 Jit::GetHostExecutionBudgetResult() const {
     return impl->GetHostExecutionBudgetResult();
+}
+
+bool Jit::Precompile(std::uint64_t descriptor) {
+    return impl->Precompile(descriptor);
+}
+
+void Jit::GeneratePortableIR(std::uint64_t descriptor) {
+    impl->GeneratePortableIR(descriptor);
+}
+
+Jit::PortableIREmitOutcome Jit::PrecompileWithResult(IR::Block block) {
+    return impl->PrecompileWithResult(std::move(block));
+}
+
+bool Jit::Precompile(IR::Block block) {
+    return PrecompileWithResult(std::move(block)) == PortableIREmitOutcome::NativeEmitted;
+}
+
+void Jit::SetPortableIRDemandProvider(PortableIRDemandProvider provider, void* user_arg) {
+    impl->SetPortableIRDemandProvider(provider, user_arg);
+}
+
+void Jit::SetPortableIREmitCompletion(PortableIREmitCompletion completion, void* user_arg) {
+    impl->SetPortableIREmitCompletion(completion, user_arg);
+}
+
+std::uint64_t Jit::CodeCacheGeneration() const {
+    return impl->CodeCacheGeneration();
 }
 
 void Jit::ClearCache() {

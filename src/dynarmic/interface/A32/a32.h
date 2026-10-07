@@ -127,7 +127,7 @@ public:
     };
 
     // Optional host-side source for a previously validated portable IR block.
-    // Dynarmic calls this only after a NativeCodeSlab miss and consumes the
+    // Dynarmic calls this only after a native code-cache miss and consumes the
     // returned block while emitting native code. The provider must not do
     // I/O, acquire locks, allocate, or scan; it may return nullptr.
     using PortableIRDemandProvider = IR::Block* (*)(void* user_arg, std::uint64_t location_descriptor, std::uint64_t slab_generation) noexcept;
@@ -196,7 +196,7 @@ public:
     PortableIREmitOutcome PrecompileWithResult(IR::Block block);
 
     /**
-     * Installs an optional provider consumed at the true NativeCodeSlab miss.
+     * Installs an optional provider consumed at the true native-cache miss.
      * The provider and user argument must remain valid until the Jit is
      * destroyed or another provider is installed.
      */
@@ -205,7 +205,7 @@ public:
 
     /**
      * Installs an optional completion callback for provider-supplied IR.
-     * The callback runs after NativeCodeSlab::emit has produced its result.
+     * The callback runs after native emission has produced its result.
      */
     void SetPortableIREmitCompletion(PortableIREmitCompletion completion,
                                      void* user_arg);
@@ -270,6 +270,9 @@ public:
 
     /// Returns the number of bytes currently occupied in the code cache.
     std::size_t CodeCacheUsed() const;
+
+    /// Host-cache validity stamp for prepared IR handoff, read while stopped.
+    std::uint64_t CodeCacheGeneration() const;
 
     /// Returns executor-local stable-link and return-stack-buffer counters.
     DispatchCounters GetDispatchCounters() const;

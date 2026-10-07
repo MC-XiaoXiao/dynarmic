@@ -66,6 +66,7 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
         return block_entry;
     }
 
+    EnsureEmissionSpace();
     const auto translation_started = std::chrono::steady_clock::now();
     IR::Block ir_block = GenerateIR(descriptor);
     const EmittedBlockInfo block_info = Emit(ir_block);
@@ -145,10 +146,14 @@ size_t AddressSpace::GetRemainingSize() {
     return code_cache_size - static_cast<size_t>(code.offset());
 }
 
-EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
+void AddressSpace::EnsureEmissionSpace() {
     if (GetRemainingSize() < 1024 * 1024) {
         ClearCache();
     }
+}
+
+EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
+    EnsureEmissionSpace();
 
     UnprotectCodeMemory();
 

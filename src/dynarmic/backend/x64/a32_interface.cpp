@@ -1296,6 +1296,10 @@ struct Jit::Impl {
         native_code_slab->dump_disassembly();
     }
 
+    u64 CodeCacheGeneration() const {
+        return native_code_slab->generation_snapshot();
+    }
+
     size_t CodeCacheUsed() const {
         return native_code_slab->code_cache_used();
     }
@@ -1683,6 +1687,10 @@ void Jit::ClearExclusiveState() {
 
 void Jit::DumpDisassembly() const {
     impl->DumpDisassembly();
+}
+
+std::uint64_t Jit::CodeCacheGeneration() const {
+    return impl->CodeCacheGeneration();
 }
 
 std::size_t Jit::CodeCacheUsed() const {

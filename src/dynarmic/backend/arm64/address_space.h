@@ -41,7 +41,7 @@ public:
     // Returns "most likely" entry_point associated with the emitted code at that location
     CodePtr ReverseGetEntryPoint(CodePtr host_pc);
 
-    CodePtr GetOrEmit(IR::LocationDescriptor descriptor);
+    virtual CodePtr GetOrEmit(IR::LocationDescriptor descriptor);
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack);
 
     void InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors);
@@ -51,6 +51,7 @@ public:
     void DumpDisassembly() const;
 
     size_t GetCodeCacheUsed() const;
+    u64 GetCodeCacheGeneration() const { return cache_generation; }
 
 protected:
     virtual EmitConfig GetEmitConfig() = 0;
@@ -70,6 +71,7 @@ protected:
     }
 
     size_t GetRemainingSize();
+    void EnsureEmissionSpace();
     EmittedBlockInfo Emit(IR::Block& ir_block);
     void Link(EmittedBlockInfo& block);
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
