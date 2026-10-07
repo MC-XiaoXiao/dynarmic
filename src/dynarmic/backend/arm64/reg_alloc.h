@@ -335,6 +335,7 @@ private:
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
     size_t spill_count = 0;
+    u64 used_registers = 0;
 
     void MarkValueDefined(const IR::Inst* inst) {
         const size_t name = inst->GetName();

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <iterator>
 #include <random>
 
@@ -213,19 +214,21 @@ void RegAlloc::DefineAsRegister(IR::Inst* inst, oaknut::Reg reg) {
     MarkValueDefined(inst);
 
     ASSERT(!ValueLocation(inst));
-    auto& info = reg.is_vector() ? fprs[reg.index()] : gprs[reg.index()];
+    const HostLoc location{reg.is_vector() ? HostLoc::Kind::Fpr : HostLoc::Kind::Gpr, reg.index()};
+    auto& info = ValueInfo(location);
     ASSERT(info.IsCompletelyEmpty());
     info.values.push_back(inst);
     info.expected_uses += inst->UseCount();
-    value_locations[inst->GetName()] = HostLoc{reg.is_vector() ? HostLoc::Kind::Fpr : HostLoc::Kind::Gpr, reg.index()};
+    value_locations[inst->GetName()] = location;
 }
 
 void RegAlloc::UpdateAllUses() {
-    for (auto& gpr : gprs) {
-        gpr.UpdateUses();
-    }
-    for (auto& fpr : fprs) {
-        fpr.UpdateUses();
+    // A location never assigned in this block has no value uses to retire.
+    // Keep the set conservative across moves, aliases and register reuse.
+    for (u64 remaining = used_registers; remaining; remaining &= remaining - 1) {
+        const auto index = static_cast<size_t>(std::countr_zero(remaining));
+        auto& info = index < 32 ? gprs[index] : fprs[index - 32];
+        info.UpdateUses();
     }
     flags.UpdateUses();
     for (size_t i = 0; i < spill_count; ++i) {
@@ -387,13 +390,13 @@ int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
     if constexpr (kind == HostLoc::Kind::Gpr) {
         const int new_location_index = AllocateRegister(gprs, gpr_order);
         SpillGpr(new_location_index);
-        gprs[new_location_index].SetupLocation(value);
+        ValueInfo(HostLoc{HostLoc::Kind::Gpr, new_location_index}).SetupLocation(value);
         value_locations[value->GetName()] = HostLoc{HostLoc::Kind::Gpr, new_location_index};
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Fpr) {
         const int new_location_index = AllocateRegister(fprs, fpr_order);
         SpillFpr(new_location_index);
-        fprs[new_location_index].SetupLocation(value);
+        ValueInfo(HostLoc{HostLoc::Kind::Fpr, new_location_index}).SetupLocation(value);
         value_locations[value->GetName()] = HostLoc{HostLoc::Kind::Fpr, new_location_index};
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Flags) {
@@ -612,8 +615,10 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
 HostLocInfo& RegAlloc::ValueInfo(HostLoc host_loc) {
     switch (host_loc.kind) {
     case HostLoc::Kind::Gpr:
+        used_registers |= u64{1} << host_loc.index;
         return gprs[static_cast<size_t>(host_loc.index)];
     case HostLoc::Kind::Fpr:
+        used_registers |= u64{1} << (host_loc.index + 32);
         return fprs[static_cast<size_t>(host_loc.index)];
     case HostLoc::Kind::Flags:
         return flags;
