@@ -21,6 +21,8 @@ constexpr oaknut::XReg Xstate{28};
 constexpr oaknut::XReg Xhalt{27};
 constexpr oaknut::XReg Xticks{26};
 constexpr oaknut::XReg Xfastmem{25};
+// Fastmem keeps this register when enabled; table-only execution can reuse it.
+constexpr oaknut::XReg Xreadpagetable{25};
 constexpr oaknut::XReg Xpagetable{24};
 
 constexpr oaknut::XReg Xscratch0{16}, Xscratch1{17}, Xscratch2{30};

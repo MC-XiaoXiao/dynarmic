@@ -5,6 +5,8 @@
 
 #include "dynarmic/backend/arm64/a32_address_space.h"
 
+#include <atomic>
+
 #include "dynarmic/backend/arm64/a32_jitstate.h"
 #include "dynarmic/backend/arm64/abi.h"
 #include "dynarmic/backend/arm64/devirtualize.h"
@@ -155,6 +157,23 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
     return target;
 }
 
+static void EmitMemoryBases(oaknut::CodeGenerator& code, const A32::UserConfig& conf) {
+    const auto load_table = [&](oaknut::XReg reg, const void* table, const std::atomic<u64>* link) {
+        if (link) {
+            code.MOV(Xscratch0, mcl::bit_cast<u64>(link));
+            code.LDAR(reg, Xscratch0);
+        } else if (table) {
+            code.MOV(reg, mcl::bit_cast<u64>(table));
+        }
+    };
+    load_table(Xpagetable, conf.page_table, conf.page_table_link);
+    if (conf.fastmem_pointer) {
+        code.MOV(Xfastmem, *conf.fastmem_pointer);
+    } else {
+        load_table(Xreadpagetable, conf.read_page_table, conf.read_page_table_link);
+    }
+}
+
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
         : AddressSpace(conf.code_cache_size)
         , conf(conf) {
@@ -252,12 +271,7 @@ void A32AddressSpace::EmitPrelude() {
         code.MOV(X19, X0);
         code.MOV(Xstate, X1);
         code.MOV(Xhalt, X2);
-        if (conf.page_table) {
-            code.MOV(Xpagetable, mcl::bit_cast<u64>(conf.page_table));
-        }
-        if (conf.fastmem_pointer) {
-            code.MOV(Xfastmem, *conf.fastmem_pointer);
-        }
+        EmitMemoryBases(code, conf);
 
         if (conf.HasOptimization(OptimizationFlag::ReturnStackBuffer)) {
             code.LDR(Xscratch0, l_return_to_dispatcher);
@@ -291,12 +305,7 @@ void A32AddressSpace::EmitPrelude() {
         code.MOV(X19, X0);
         code.MOV(Xstate, X1);
         code.MOV(Xhalt, X2);
-        if (conf.page_table) {
-            code.MOV(Xpagetable, mcl::bit_cast<u64>(conf.page_table));
-        }
-        if (conf.fastmem_pointer) {
-            code.MOV(Xfastmem, *conf.fastmem_pointer);
-        }
+        EmitMemoryBases(code, conf);
 
         if (conf.HasOptimization(OptimizationFlag::ReturnStackBuffer)) {
             code.LDR(Xscratch0, l_return_to_dispatcher);
@@ -430,6 +439,12 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
             conf.read_page_table != nullptr
                 ? conf.read_page_table
                 : conf.page_table),
+        .page_table_link_pointer = mcl::bit_cast<u64>(conf.page_table_link),
+        .read_page_table_link_pointer = mcl::bit_cast<u64>(
+            conf.read_page_table_link != nullptr
+                ? conf.read_page_table_link
+                : conf.read_page_table == nullptr ? conf.page_table_link : nullptr),
+        .read_page_table_in_register = !conf.fastmem_pointer.has_value(),
         .page_table_address_space_bits = 32,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
         .silently_mirror_page_table = true,

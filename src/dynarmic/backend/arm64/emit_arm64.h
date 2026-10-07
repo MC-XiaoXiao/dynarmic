@@ -127,6 +127,9 @@ struct EmitConfig {
     // Page table
     u64 page_table_pointer;
     u64 read_page_table_pointer;
+    u64 page_table_link_pointer{};
+    u64 read_page_table_link_pointer{};
+    bool read_page_table_in_register{};
     size_t page_table_address_space_bits;
     int page_table_pointer_mask_bits;
     bool silently_mirror_page_table;
