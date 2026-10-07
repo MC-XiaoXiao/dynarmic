@@ -103,6 +103,12 @@ struct Jit::Impl final {
                 current_address_space.Get(IR::LocationDescriptor{descriptor}) != nullptr};
     }
 
+    void PrepareRun() {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        current_address_space.GetOrEmit(current_state.GetLocationDescriptor());
+    }
+
     u64 CodeCacheGeneration() const {
         return current_address_space.GetCodeCacheGeneration();
     }
@@ -229,7 +235,7 @@ Jit::Jit(UserConfig conf)
 Jit::~Jit() = default;
 
 void Jit::PrepareRun() {
-    // Coordinated native memory leases are currently an x64 capability.
+    impl->PrepareRun();
 }
 
 HaltReason Jit::Run() {

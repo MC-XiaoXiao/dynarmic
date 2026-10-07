@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "dynarmic/backend/arm64/a32_jitstate.h"
+#include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
 #include "dynarmic/backend/arm64/abi.h"
 #include "dynarmic/backend/arm64/devirtualize.h"
 #include "dynarmic/backend/arm64/emit_arm64.h"
@@ -81,6 +82,8 @@ static void* EmitExclusiveReadCallTrampoline(oaknut::CodeGenerator& code, const 
     oaknut::Label l_addr, l_this;
 
     auto fn = [](const A32::UserConfig& conf, A32::VAddr vaddr) -> T {
+        const A32MemoryExecutionPause pause{conf};
+        conf.callbacks->MemoryReadExclusive(vaddr, sizeof(T));
         return conf.global_monitor->ReadAndMark<T>(conf.processor_id, vaddr, [&]() -> T {
             return (conf.callbacks->*callback)(vaddr);
         });
@@ -136,6 +139,7 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
     oaknut::Label l_addr, l_this;
 
     auto fn = [](const A32::UserConfig& conf, A32::VAddr vaddr, T value) -> u32 {
+        const A32MemoryExecutionPause pause{conf};
         return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
                                                             [&](T expected) -> bool {
                                                                 return (conf.callbacks->*callback)(vaddr, value, expected);
@@ -251,6 +255,7 @@ void A32AddressSpace::CompletePortableEmit(A32::Jit::PortableIREmitOutcome outco
 }
 
 CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
+    const A32MemoryExecutionPause pause{conf};
     try {
         return AddressSpace::GetOrEmit(descriptor);
     } catch (...) {
@@ -285,6 +290,7 @@ A32::Jit::PortableIREmitOutcome A32AddressSpace::Precompile(IR::Block& block) {
 }
 
 CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack) {
+    const A32MemoryExecutionPause pause{conf};
     const auto entry_point = AddressSpace::GetOrEmit(descriptor, stack);
     if (fast_dispatch_cache && entry_point != prelude_info.return_from_run_code) {
         fast_dispatch_cache->Publish(descriptor, entry_point);
