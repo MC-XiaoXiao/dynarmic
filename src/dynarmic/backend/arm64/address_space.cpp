@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <chrono>
 #include <cstdio>
 
 #include <mcl/bit_cast.hpp>
@@ -65,8 +66,15 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
         return block_entry;
     }
 
+    const auto translation_started = std::chrono::steady_clock::now();
     IR::Block ir_block = GenerateIR(descriptor);
-    const EmittedBlockInfo block_info = Emit(std::move(ir_block));
+    const EmittedBlockInfo block_info = Emit(ir_block);
+    const auto translation_nanoseconds = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - translation_started).count());
+    // Notify only once native code is linked, synchronized and indexed. The
+    // optimized IR remains alive for clients of the existing portable codec.
+    CodeTranslationCompleted(ir_block, translation_nanoseconds);
     return block_info.entry_point;
 }
 
@@ -137,14 +145,14 @@ size_t AddressSpace::GetRemainingSize() {
     return code_cache_size - static_cast<size_t>(code.offset());
 }
 
-EmittedBlockInfo AddressSpace::Emit(IR::Block block) {
+EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
     if (GetRemainingSize() < 1024 * 1024) {
         ClearCache();
     }
 
     UnprotectCodeMemory();
 
-    EmittedBlockInfo block_info = EmitArm64(code, std::move(block), GetEmitConfig(), fastmem_manager);
+    EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
 
     ASSERT(block_entries.insert({block.Location(), block_info.entry_point}).second);
     ASSERT(reverse_block_entries.insert({block_info.entry_point, block.Location()}).second);

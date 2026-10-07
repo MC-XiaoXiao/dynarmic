@@ -30,6 +30,7 @@ protected:
 
     void EmitPrelude();
     EmitConfig GetEmitConfig() override;
+    void CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept override;
     void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) override;
 
     const A32::UserConfig conf;

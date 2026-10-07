@@ -208,6 +208,10 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
     return ir_block;
 }
 
+void A32AddressSpace::CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept {
+    conf.callbacks->CodeTranslationCompleted(block.Location().Value(), translation_nanoseconds, block);
+}
+
 CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor, StackLayout& stack) {
     const auto entry_point = AddressSpace::GetOrEmit(descriptor, stack);
     if (fast_dispatch_cache) {

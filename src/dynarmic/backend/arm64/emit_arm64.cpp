@@ -192,7 +192,7 @@ static void EmitAddCycles(oaknut::CodeGenerator& code, EmitContext& ctx, size_t 
     }
 }
 
-EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const EmitConfig& conf, FastmemManager& fastmem_manager) {
+EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const EmitConfig& conf, FastmemManager& fastmem_manager) {
     if (conf.very_verbose_debugging_output) {
         std::puts(IR::DumpBlock(block).c_str());
     }
