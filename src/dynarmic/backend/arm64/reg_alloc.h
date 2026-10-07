@@ -159,7 +159,7 @@ public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
     explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::span<const int> gpr_order, std::span<const int> fpr_order, size_t instruction_count)
-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, defined_insts((instruction_count + 63) / 64, 0) {}
+            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, defined_insts((instruction_count + 63) / 64, 0), value_locations(instruction_count, HostLoc{HostLoc::Kind::Gpr, -1}) {}
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     bool WasValueDefined(IR::Inst* inst) const;
@@ -323,6 +323,7 @@ private:
     std::optional<HostLoc> ValueLocation(const IR::Inst* value) const;
     HostLocInfo& ValueInfo(HostLoc host_loc);
     HostLocInfo& ValueInfo(const IR::Inst* value);
+    void MoveValues(HostLoc from, HostLoc to);
 
     oaknut::CodeGenerator& code;
     FpsrManager& fpsr_manager;
@@ -344,6 +345,10 @@ private:
     // EmitArm64 assigns dense names after all IR transforms. Small blocks keep
     // their definition bits inline without allocating or hashing IR pointers.
     boost::container::small_vector<u64, 4> defined_insts;
+
+    // Dense names also index locations. Expired entries are harmless: lookup
+    // checks the existing alias list before accepting a cached location.
+    boost::container::small_vector<HostLoc, 64> value_locations;
 };
 
 template<typename T>
