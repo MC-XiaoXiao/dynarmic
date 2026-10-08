@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -333,10 +334,13 @@ void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation
     }
 }
 
+template<bool Synchronize>
 void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list) {
     using namespace oaknut;
     using namespace oaknut::util;
 
+    CodePtr modified_begin = block_relocations_list.empty() ? entry_point : entry_point + block_relocations_list.front().code_offset;
+    CodePtr modified_end = modified_begin;
     for (auto [ptr_offset, type] : block_relocations_list) {
         CodeGenerator c{mem.ptr(), mem.ptr()};
         c.set_xptr(reinterpret_cast<u32*>(entry_point + ptr_offset));
@@ -359,6 +363,19 @@ void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr targe
         default:
             ASSERT_FALSE("Invalid BlockRelocationType");
         }
+        if constexpr (Synchronize) {
+            const auto begin = entry_point + ptr_offset;
+            const auto end = c.xptr<CodePtr>();
+            modified_begin = std::min(modified_begin, begin);
+            modified_end = std::max(modified_end, end);
+        }
+    }
+    if constexpr (Synchronize) {
+        if (block_relocations_list.empty())
+            return;
+        // Relinking changes only these instructions. Keep Oaknut's complete
+        // cache-maintenance sequence, including multi-instruction ADRL sites.
+        mem.invalidate(reinterpret_cast<u32*>(modified_begin), static_cast<size_t>(modified_end - modified_begin));
     }
 }
 
@@ -404,10 +421,8 @@ void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor,
             const EmittedBlockInfo& block_info = block_iter->second;
 
             if (auto relocation_iter = block_info.block_relocations.find(target_descriptor); relocation_iter != block_info.block_relocations.end()) {
-                LinkBlockLinks(block_info.entry_point, target_ptr, relocation_iter->second);
+                LinkBlockLinks<true>(block_info.entry_point, target_ptr, relocation_iter->second);
             }
-
-            mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point), block_info.size);
         }
     }
 }
