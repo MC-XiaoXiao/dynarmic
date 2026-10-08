@@ -38,6 +38,9 @@ public:
     CodePtr ReturnFromRunCode() const { return static_cast<CodePtr>(prelude_info.return_from_run_code); }
     A32::NativeCodeSlab::BlockDescriptor EmitShared(IR::Block& block, const A32::UserConfig& source);
     size_t SpaceRemaining() { return GetRemainingSize(); }
+    void PublishBranchLinks(IR::LocationDescriptor descriptor) {
+        RelinkBranchesForDescriptor(descriptor, Get(descriptor));
+    }
     void PublishLinks(IR::LocationDescriptor descriptor) {
         UnprotectCodeMemory();
         RelinkForDescriptor(descriptor, Get(descriptor));

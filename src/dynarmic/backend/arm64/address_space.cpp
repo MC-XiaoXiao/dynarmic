@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <cstdio>
@@ -353,6 +354,42 @@ void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr targe
             ASSERT_FALSE("Invalid BlockRelocationType");
         }
     }
+}
+
+void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {
+#if !defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT) && !defined(__APPLE__) && !defined(__OpenBSD__)
+    // The target's cache maintenance has completed before this publication.
+    // AArch64 permits concurrent NOP/B replacement: an executor may take
+    // either the correct dispatcher fallback or the synchronized new target.
+    // ADRL is a multi-instruction update and still requires quiescence.
+    const auto references = block_references.find(target_descriptor);
+    if (!target_ptr || references == block_references.end())
+        return;
+    for (const auto source : references->second) {
+        const auto info = block_infos.find(source);
+        if (info == block_infos.end())
+            continue;
+        const auto relocations = info->second.block_relocations.find(target_descriptor);
+        if (relocations == info->second.block_relocations.end())
+            continue;
+        for (const auto [offset, type] : relocations->second) {
+            if (type != BlockRelocationType::Branch)
+                continue;
+            auto* const patch = reinterpret_cast<u32*>(source + offset);
+            u32 instruction;
+            oaknut::CodeGenerator branch{&instruction, patch};
+            branch.B(static_cast<const void*>(target_ptr));
+            static_assert(std::atomic_ref<u32>::is_always_lock_free);
+            static_assert(std::atomic_ref<u32>::required_alignment <= alignof(u32));
+            std::atomic_ref<u32>{*patch}.store(instruction, std::memory_order_release);
+            mem.invalidate(patch, sizeof(u32));
+        }
+    }
+#else
+    // Mappings that change executable permissions retain deferred linking.
+    (void)target_descriptor;
+    (void)target_ptr;
+#endif
 }
 
 void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {

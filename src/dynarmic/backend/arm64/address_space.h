@@ -76,6 +76,7 @@ protected:
     void Link(EmittedBlockInfo& block);
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
+    void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
 
     FakeCall FastmemCallback(u64 host_pc);
 

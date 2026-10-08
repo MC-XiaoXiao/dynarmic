@@ -102,6 +102,10 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
             return {};
         }
         const auto& emitted = emitter->EmitShared(block, source ? *source : *conf);
+        // EmitShared synchronizes the new target before any incoming branch
+        // can expose it to another active executor. Keep address loads deferred.
+        if (active_executions != 0)
+            emitter->PublishBranchLinks(block.Location());
         pending_direct_link_targets.insert(block.Location());
         finish_pending_direct_link_publication();
         return {emitted.entrypoint, emitted.size, current_generation, true};

@@ -239,7 +239,11 @@ struct Jit::Impl final {
 private:
     static const void* LookupSharedThunk(void* arg) {
         auto& self = *static_cast<Impl*>(arg);
-        return self.GetSharedBlock(self.current_state.GetLocationDescriptor(), self.active_generation).entrypoint;
+        const auto entry = self.GetSharedBlock(self.current_state.GetLocationDescriptor(), self.active_generation).entrypoint;
+        // A sibling may have emitted this block; the slow lookup resumes
+        // through an indirect branch rather than the published direct B.
+        __asm__ volatile("isb" ::: "memory");
+        return entry;
     }
 
     HaltReason ExecuteShared(bool step) {
@@ -255,6 +259,9 @@ private:
         auto* const callbacks = GetA32RuntimeCallbacks(conf);
         callbacks->MemoryExecutionResume();
         SCOPE_EXIT { callbacks->MemoryExecutionSuspend(); };
+        // Synchronize this executor after quiescent patching or code reuse.
+        // Cache maintenance on the publishing core does not flush our pipeline.
+        __asm__ volatile("isb" ::: "memory");
         return step ? shared_slab->step_code(&current_state, block.entrypoint)
                     : shared_slab->run_code(&current_state, block.entrypoint);
     }

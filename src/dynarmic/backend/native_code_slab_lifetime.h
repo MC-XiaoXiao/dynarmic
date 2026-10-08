@@ -29,9 +29,10 @@ namespace Dynarmic::Backend {
         static_cast<std::uint64_t>(start_address) + offset);
 }
 
-// Shared by host backends. Code retirement and patching are performed only
-// after every registered executor leaves the published generation. Backend
-// hooks own instruction-cache maintenance and the actual block index.
+// Shared by host backends. Code retirement and multi-instruction patching
+// require every executor to leave the published generation. Backend hooks
+// may publish independent instruction replacements permitted by the host
+// architecture earlier, and own cache maintenance and the block index.
 template<class Implementation, class State, class Entry>
 class NativeCodeSlabLifetime {
 public:
