@@ -134,6 +134,8 @@ public:
     size_t NumArgs() const;
 
     Value GetArg(size_t index) const;
+    /// Borrow an argument without copying it; the reference is owned by this instruction.
+    const Value& GetArgRef(size_t index) const;
     void SetArg(size_t index, Value value);
 
     void Invalidate();

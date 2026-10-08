@@ -92,9 +92,7 @@ bool Value::IsIdentity() const {
 }
 
 bool Value::IsImmediate() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).IsImmediate();
-    return type != Type::Opaque;
+    return ResolveIdentity().type != Type::Opaque;
 }
 
 bool Value::IsEmpty() const {
@@ -102,11 +100,18 @@ bool Value::IsEmpty() const {
 }
 
 Type Value::GetType() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetType();
-    if (type == Type::Opaque)
-        return inner.inst->GetType();
-    return type;
+    const auto& value = ResolveIdentity();
+    if (value.type == Type::Opaque)
+        return value.inner.inst->GetType();
+    return value.type;
+}
+
+const Value& Value::ResolveIdentity() const {
+    const Value* value = this;
+    while (value->IsIdentity()) {
+        value = &value->inner.inst->GetArgRef(0);
+    }
+    return *value;
 }
 
 A32::Reg Value::GetA32RegRef() const {
@@ -136,65 +141,57 @@ Inst* Value::GetInst() const {
 
 Inst* Value::GetInstRecursive() const {
     ASSERT(type == Type::Opaque);
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetInstRecursive();
-    return inner.inst;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::Opaque);
+    return value.inner.inst;
 }
 
 bool Value::GetU1() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetU1();
-    ASSERT(type == Type::U1);
-    return inner.imm_u1;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::U1);
+    return value.inner.imm_u1;
 }
 
 u8 Value::GetU8() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetU8();
-    ASSERT(type == Type::U8);
-    return inner.imm_u8;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::U8);
+    return value.inner.imm_u8;
 }
 
 u16 Value::GetU16() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetU16();
-    ASSERT(type == Type::U16);
-    return inner.imm_u16;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::U16);
+    return value.inner.imm_u16;
 }
 
 u32 Value::GetU32() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetU32();
-    ASSERT(type == Type::U32);
-    return inner.imm_u32;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::U32);
+    return value.inner.imm_u32;
 }
 
 u64 Value::GetU64() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetU64();
-    ASSERT(type == Type::U64);
-    return inner.imm_u64;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::U64);
+    return value.inner.imm_u64;
 }
 
 Value::CoprocessorInfo Value::GetCoprocInfo() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetCoprocInfo();
-    ASSERT(type == Type::CoprocInfo);
-    return inner.imm_coproc;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::CoprocInfo);
+    return value.inner.imm_coproc;
 }
 
 Cond Value::GetCond() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetCond();
-    ASSERT(type == Type::Cond);
-    return inner.imm_cond;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::Cond);
+    return value.inner.imm_cond;
 }
 
 AccType Value::GetAccType() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).GetAccType();
-    ASSERT(type == Type::AccType);
-    return inner.imm_acctype;
+    const auto& value = ResolveIdentity();
+    ASSERT(value.type == Type::AccType);
+    return value.inner.imm_acctype;
 }
 
 s64 Value::GetImmediateAsS64() const {

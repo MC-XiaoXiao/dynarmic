@@ -131,6 +131,8 @@ public:
     bool IsZero() const;
 
 private:
+    const Value& ResolveIdentity() const;
+
     Type type;
 
     union {

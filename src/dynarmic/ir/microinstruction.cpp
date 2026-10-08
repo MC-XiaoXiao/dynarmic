@@ -644,6 +644,13 @@ Value Inst::GetArg(size_t index) const {
     return args[index];
 }
 
+const Value& Inst::GetArgRef(size_t index) const {
+    ASSERT_MSG(index < GetNumArgsOf(op), "Inst::GetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
+    ASSERT_MSG(!args[index].IsEmpty() || GetArgTypeOf(op, index) == IR::Type::Opaque, "Inst::GetArg: index {} is empty", index, args[index].GetType());
+
+    return args[index];
+}
+
 void Inst::SetArg(size_t index, Value value) {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::SetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
     const Type arg_type = GetArgTypeOf(op, index);
