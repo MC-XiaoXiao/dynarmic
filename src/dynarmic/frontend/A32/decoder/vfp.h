@@ -14,6 +14,7 @@
 
 #include "dynarmic/frontend/decoder/decoder_detail.h"
 #include "dynarmic/frontend/decoder/matcher.h"
+#include "dynarmic/frontend/decoder/matcher_table.h"
 
 namespace Dynarmic::A32 {
 
@@ -22,13 +23,14 @@ using VFPMatcher = Decoder::Matcher<Visitor, u32>;
 
 template<typename V>
 std::optional<std::reference_wrapper<const VFPMatcher<V>>> DecodeVFP(u32 instruction) {
-    using Table = std::vector<VFPMatcher<V>>;
+    using List = std::vector<VFPMatcher<V>>;
+    using Table = Decoder::MatcherTable<VFPMatcher<V>>;
 
     static const struct Tables {
         Table unconditional;
         Table conditional;
     } tables = [] {
-        Table list = {
+        List list = {
 
 #define INST(fn, name, bitstring) DYNARMIC_DECODER_GET_MATCHER(VFPMatcher, fn, name, Decoder::detail::StringToArray<32>(bitstring)),
 #include "./vfp.inc"
@@ -41,18 +43,15 @@ std::optional<std::reference_wrapper<const VFPMatcher<V>>> DecodeVFP(u32 instruc
         });
 
         return Tables{
-            Table{list.begin(), division},
-            Table{division, list.end()},
+            Table{List{list.begin(), division}},
+            Table{List{division, list.end()}},
         };
     }();
 
     const bool is_unconditional = (instruction & 0xF0000000) == 0xF0000000;
     const Table& table = is_unconditional ? tables.unconditional : tables.conditional;
 
-    const auto matches_instruction = [instruction](const auto& matcher) { return matcher.Matches(instruction); };
-
-    auto iter = std::find_if(table.begin(), table.end(), matches_instruction);
-    return iter != table.end() ? std::optional<std::reference_wrapper<const VFPMatcher<V>>>(*iter) : std::nullopt;
+    return table.Find(instruction);
 }
 
 }  // namespace Dynarmic::A32

@@ -16,6 +16,7 @@
 
 #include "dynarmic/frontend/decoder/decoder_detail.h"
 #include "dynarmic/frontend/decoder/matcher.h"
+#include "dynarmic/frontend/decoder/matcher_table.h"
 
 namespace Dynarmic::A32 {
 
@@ -67,12 +68,8 @@ std::vector<ASIMDMatcher<V>> GetASIMDDecodeTable() {
 
 template<typename V>
 std::optional<std::reference_wrapper<const ASIMDMatcher<V>>> DecodeASIMD(u32 instruction) {
-    static const auto table = GetASIMDDecodeTable<V>();
-
-    const auto matches_instruction = [instruction](const auto& matcher) { return matcher.Matches(instruction); };
-
-    auto iter = std::find_if(table.begin(), table.end(), matches_instruction);
-    return iter != table.end() ? std::optional<std::reference_wrapper<const ASIMDMatcher<V>>>(*iter) : std::nullopt;
+    static const Decoder::MatcherTable<ASIMDMatcher<V>> table{GetASIMDDecodeTable<V>()};
+    return table.Find(instruction);
 }
 
 }  // namespace Dynarmic::A32
