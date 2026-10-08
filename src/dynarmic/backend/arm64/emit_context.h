@@ -6,12 +6,12 @@
 #pragma once
 
 #include <functional>
-#include <memory>
 #include <vector>
 
 #include <oaknut/oaknut.hpp>
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
+#include "dynarmic/backend/arm64/deferred_labels.h"
 #include "dynarmic/backend/arm64/reg_alloc.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/ir/basic_block.h"
@@ -26,12 +26,6 @@ struct EmitConfig;
 class FastmemManager;
 class FpsrManager;
 
-using SharedLabel = std::shared_ptr<oaknut::Label>;
-
-inline SharedLabel GenSharedLabel() {
-    return std::make_shared<oaknut::Label>();
-}
-
 struct EmitContext {
     IR::Block& block;
     RegAlloc& reg_alloc;
@@ -40,6 +34,7 @@ struct EmitContext {
     FpsrManager& fpsr;
     FastmemManager& fastmem;
 
+    DeferredLabels labels;
     std::vector<std::function<void()>> deferred_emits;
 
     FP::FPCR FPCR(bool fpcr_controlled = true) const {

@@ -231,7 +231,7 @@ constexpr size_t page_mask = (1 << page_bits) - 1;
 // This function may use Xscratch0 as a scratch register
 // Trashes NZCV
 template<size_t bitsize>
-void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback) {
+void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label* fallback) {
     static_assert(bitsize == 8 || bitsize == 16 || bitsize == 32 || bitsize == 64 || bitsize == 128);
 
     if (bitsize == 8 || (ctx.conf.detect_misaligned_access_via_page_table & bitsize) == 0) {
@@ -269,7 +269,7 @@ void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oa
 // Address to read/write = [ret0 + ret1], ret0 is always Xscratch0 and ret1 is either Xaddr or Xscratch1
 // Trashes NZCV
 template<size_t bitsize>
-std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback, bool read_table) {
+std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label* fallback, bool read_table) {
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
 
@@ -454,7 +454,8 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
     ctx.reg_alloc.SpillFlags();
     RegAlloc::Realize(Xaddr, Rvalue);
 
-    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+    auto* fallback = ctx.labels.Create();
+    auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(
         code, ctx, Xaddr, fallback, true);
@@ -495,7 +496,8 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
     ctx.reg_alloc.SpillFlags();
     RegAlloc::Realize(Xaddr, Rvalue);
 
-    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+    auto* fallback = ctx.labels.Create();
+    auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(
         code, ctx, Xaddr, fallback, false);
@@ -544,7 +546,7 @@ inline bool ShouldExt32(EmitContext& ctx) {
 // Address to read/write = [ret0 + ret1], ret0 is always Xfastmem and ret1 is either Xaddr or Xscratch0
 // Trashes NZCV
 template<size_t bitsize>
-std::pair<oaknut::XReg, oaknut::XReg> FastmemEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback) {
+std::pair<oaknut::XReg, oaknut::XReg> FastmemEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label* fallback) {
     if (ctx.conf.fastmem_address_space_bits == 64 || ShouldExt32(ctx)) {
         return std::make_pair(Xfastmem, Xaddr);
     }
@@ -575,7 +577,8 @@ void FastmemEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::In
     ctx.reg_alloc.SpillFlags();
     RegAlloc::Realize(Xaddr, Rvalue);
 
-    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+    auto* fallback = ctx.labels.Create();
+    auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = FastmemEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
     const auto fastmem_location = EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, ShouldExt32(ctx));
@@ -625,7 +628,8 @@ void FastmemEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::I
     ctx.reg_alloc.SpillFlags();
     RegAlloc::Realize(Xaddr, Rvalue);
 
-    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+    auto* fallback = ctx.labels.Create();
+    auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = FastmemEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
     const auto fastmem_location = EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, ShouldExt32(ctx));
