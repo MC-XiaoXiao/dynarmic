@@ -2,6 +2,8 @@
 #pragma once
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 #include <tuple>
 #include <vector>
 
@@ -44,9 +46,9 @@ inline bool NativeTemplateRuntimeIsLinked(const A32::UserConfig& conf) {
 class A32NativeCodeTemplate final : public A32::NativeCodeTemplate {
 public:
     A32NativeCodeTemplate(const A32::UserConfig& conf, const IR::Block& block,
-                         const EmittedBlockInfo& emitted)
+                         EmittedBlockInfo& emitted)
         : configuration{NativeTemplateConfiguration(conf)}, location{block.Location()},
-          end_location{block.EndLocation()}, info{emitted},
+          end_location{block.EndLocation()}, info{ShareRelocations(emitted)},
           words{reinterpret_cast<const u32*>(emitted.entry_point),
                 reinterpret_cast<const u32*>(emitted.entry_point + emitted.size)} {
         // Every external branch/address is still an unlinked placeholder.
@@ -59,8 +61,9 @@ public:
     size_t MemoryFootprint() const noexcept override {
         size_t bytes = sizeof(*this) + words.capacity() * sizeof(u32) +
             info.relocations.capacity() * sizeof(Relocation) +
-            RelocationMapBytes(info.block_relocations);
-        for (const auto& [target, relocations] : info.block_relocations)
+            RelocationMapBytes(info.BlockRelocations()) +
+            (info.shared_block_relocations ? sizeof(EmittedBlockInfo::BlockRelocationMap) : 0);
+        for (const auto& [target, relocations] : info.BlockRelocations())
             bytes += relocations.capacity() * sizeof(BlockRelocation);
         return bytes;
     }
@@ -83,6 +86,14 @@ public:
     }
 
 private:
+    static const EmittedBlockInfo& ShareRelocations(EmittedBlockInfo& emitted) {
+        // Emission is complete. Share the immutable offsets with the producer,
+        // templates and imports; each cache still patches its own native code.
+        if (!emitted.block_relocations.empty())
+            emitted.shared_block_relocations = std::make_shared<const EmittedBlockInfo::BlockRelocationMap>(std::move(emitted.block_relocations));
+        return emitted;
+    }
+
     template<class Map>
     static size_t RelocationMapBytes(const Map& map) noexcept {
         if constexpr (requires { map.capacity(); })

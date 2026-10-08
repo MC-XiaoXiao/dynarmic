@@ -555,7 +555,7 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::EmitShared(IR::Block& bloc
     return {emitted.entry_point, emitted.size, 0, false, std::move(emitted_template)};
 }
 
-void A32AddressSpace::CaptureEmittedBlock(const IR::Block& block, const EmittedBlockInfo& info) {
+void A32AddressSpace::CaptureEmittedBlock(const IR::Block& block, EmittedBlockInfo& info) {
     if (emission_source && A32NativeCodeTemplate::Eligible(*emission_source, block, info) &&
         NativeTemplateConfiguration(*emission_source) == NativeTemplateConfiguration(conf)) {
         try {
@@ -577,12 +577,12 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     if (native_template->CodeSize() > GetRemainingSize())
         return {};
     UnprotectCodeMemory();
-    // Keep mutable block-link metadata local. Fixed prelude relocations are
-    // immutable and can be borrowed while the caller pins the template.
+    // Relocation offsets are immutable; only the emitted instructions change.
+    // Retain the map independently of the template and its native words.
     EmittedBlockInfo info{};
     info.entry_point = code.xptr<CodePtr>();
     info.size = native_template->info.size;
-    info.block_relocations = native_template->info.block_relocations;
+    info.shared_block_relocations = native_template->info.shared_block_relocations;
     std::memcpy(info.entry_point, native_template->words.data(), info.size);
     code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
     const auto& emitted = PublishBlock(native_template->location, std::move(info), native_template->info.relocations);

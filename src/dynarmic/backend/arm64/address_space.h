@@ -57,7 +57,7 @@ public:
 protected:
     virtual EmitConfig GetEmitConfig() = 0;
     virtual void CodeTranslationCompleted(const IR::Block&, u64) const noexcept {}
-    virtual void CaptureEmittedBlock(const IR::Block&, const EmittedBlockInfo&) {}
+    virtual void CaptureEmittedBlock(const IR::Block&, EmittedBlockInfo&) {}
     virtual void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) = 0;
 
     void ProtectCodeMemory() {

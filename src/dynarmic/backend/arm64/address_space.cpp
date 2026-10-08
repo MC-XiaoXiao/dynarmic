@@ -328,7 +328,7 @@ void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation
         }
     }
 
-    for (auto [target_descriptor, list] : block_info.block_relocations) {
+    for (auto [target_descriptor, list] : block_info.BlockRelocations()) {
         block_references[target_descriptor].insert(block_info.entry_point);
         LinkBlockLinks(block_info.entry_point, Get(target_descriptor), list);
     }
@@ -392,8 +392,8 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
         const auto info = block_infos.find(source);
         if (info == block_infos.end())
             continue;
-        const auto relocations = info->second.block_relocations.find(target_descriptor);
-        if (relocations == info->second.block_relocations.end())
+        const auto relocations = info->second.BlockRelocations().find(target_descriptor);
+        if (relocations == info->second.BlockRelocations().end())
             continue;
         for (const auto [offset, type] : relocations->second) {
             if (type != BlockRelocationType::Branch)
@@ -420,7 +420,7 @@ void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor,
         if (auto block_iter = block_infos.find(code_ptr); block_iter != block_infos.end()) {
             const EmittedBlockInfo& block_info = block_iter->second;
 
-            if (auto relocation_iter = block_info.block_relocations.find(target_descriptor); relocation_iter != block_info.block_relocations.end()) {
+            if (auto relocation_iter = block_info.BlockRelocations().find(target_descriptor); relocation_iter != block_info.BlockRelocations().end()) {
                 LinkBlockLinks<true>(block_info.entry_point, target_ptr, relocation_iter->second);
             }
         }
