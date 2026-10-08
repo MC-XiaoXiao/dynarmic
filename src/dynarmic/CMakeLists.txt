@@ -506,6 +506,20 @@ set_target_properties(dynarmic PROPERTIES
     SOVERSION ${dynarmic_VERSION_MAJOR}.${dynarmic_VERSION_MINOR}
 )
 target_compile_options(dynarmic PRIVATE ${DYNARMIC_CXX_FLAGS})
+# Cold translation calls many small IR helpers across translation units.
+# Keep weak C++ functions, data and external imports dynamically resolved.
+# Older CMake/linkers retain the default binding policy.
+get_target_property(DYNARMIC_LIBRARY_TYPE dynarmic TYPE)
+if (DYNARMIC_ENABLE_LOCAL_FUNCTION_BINDING AND
+    DYNARMIC_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY" AND
+    CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
+    include(CheckLinkerFlag)
+    check_linker_flag(CXX "LINKER:-Bsymbolic-non-weak-functions"
+                     DYNARMIC_LINKER_HAS_LOCAL_FUNCTION_BINDING)
+    if (DYNARMIC_LINKER_HAS_LOCAL_FUNCTION_BINDING)
+        target_link_options(dynarmic PRIVATE "LINKER:-Bsymbolic-non-weak-functions")
+    endif()
+endif()
 target_link_libraries(dynarmic
     PUBLIC
         tsl::robin_map
