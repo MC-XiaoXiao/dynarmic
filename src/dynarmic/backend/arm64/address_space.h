@@ -5,10 +5,10 @@
 
 #pragma once
 
-#include <map>
 #include <memory>
 #include <optional>
 
+#include <boost/container/flat_map.hpp>
 #include <mcl/stdint.hpp>
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
@@ -89,7 +89,9 @@ protected:
     // A IR::LocationDescriptor will have one current CodePtr.
     // However, there can be multiple other CodePtrs which are older, previously invalidated blocks.
     tsl::robin_map<IR::LocationDescriptor, CodePtr> block_entries;
-    std::map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
+    // Native addresses increase until a full clear. Keep reverse lookups
+    // contiguous instead of allocating a tree node for every compiled block.
+    boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
     tsl::robin_map<CodePtr, EmittedBlockInfo> block_infos;
     tsl::robin_map<IR::LocationDescriptor, tsl::robin_set<CodePtr>> block_references;
 

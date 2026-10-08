@@ -4,6 +4,7 @@
  */
 
 #include <chrono>
+#include <functional>
 #include <cstdio>
 
 #include <mcl/bit_cast.hpp>
@@ -126,7 +127,8 @@ void AddressSpace::ClearCache() {
         fast_dispatch_cache->Clear();
     }
     block_entries.clear();
-    reverse_block_entries.clear();
+    // Clearing a cache releases the reverse index, including its capacity.
+    decltype(reverse_block_entries){}.swap(reverse_block_entries);
     block_infos.clear();
     block_references.clear();
     code.set_offset(prelude_info.end_of_prelude);
@@ -160,7 +162,10 @@ EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
     EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
 
     ASSERT(block_entries.insert({block.Location(), block_info.entry_point}).second);
-    ASSERT(reverse_block_entries.insert({block_info.entry_point, block.Location()}).second);
+    ASSERT(reverse_block_entries.empty() ||
+           std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
+    reverse_block_entries.emplace_hint(reverse_block_entries.end(),
+                                      block_info.entry_point, block.Location());
     ASSERT(block_infos.insert({block_info.entry_point, block_info}).second);
 
     Link(block_info);
