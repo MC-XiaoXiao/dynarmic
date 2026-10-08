@@ -416,7 +416,10 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
 }
 
 void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {
-    for (auto code_ptr : block_references[target_descriptor]) {
+    const auto references = block_references.find(target_descriptor);
+    if (references == block_references.end())
+        return;
+    for (auto code_ptr : references->second) {
         if (auto block_iter = block_infos.find(code_ptr); block_iter != block_infos.end()) {
             const EmittedBlockInfo& block_info = block_iter->second;
 
