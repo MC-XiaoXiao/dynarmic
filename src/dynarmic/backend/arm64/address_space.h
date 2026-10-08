@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 
 #include <boost/container/flat_map.hpp>
 #include <mcl/stdint.hpp>
@@ -74,8 +75,10 @@ protected:
     size_t GetRemainingSize();
     void EnsureEmissionSpace();
     EmittedBlockInfo Emit(IR::Block& ir_block);
-    const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info);
-    void Link(EmittedBlockInfo& block);
+    // Fixed relocations are consumed synchronously, never retained by the cache.
+    const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
+                                       std::span<const Relocation> fixed_relocations = {});
+    void Link(EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);

@@ -168,7 +168,8 @@ EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
     return cached_info;
 }
 
-const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info) {
+const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
+                                                  std::span<const Relocation> fixed_relocations) {
     ASSERT(block_entries.insert({location, block_info.entry_point}).second);
     ASSERT(reverse_block_entries.empty() ||
            std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
@@ -176,7 +177,7 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
                                       block_info.entry_point, location);
     ASSERT(block_infos.insert({block_info.entry_point, block_info}).second);
 
-    Link(block_info);
+    Link(block_info, fixed_relocations.empty() ? std::span<const Relocation>{block_info.relocations} : fixed_relocations);
     if (!defer_block_linking)
         RelinkForDescriptor(location, block_info.entry_point);
 
@@ -186,11 +187,11 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     return block_infos.at(block_info.entry_point);
 }
 
-void AddressSpace::Link(EmittedBlockInfo& block_info) {
+void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation> fixed_relocations) {
     using namespace oaknut;
     using namespace oaknut::util;
 
-    for (auto [ptr_offset, target] : block_info.relocations) {
+    for (auto [ptr_offset, target] : fixed_relocations) {
         CodeGenerator c{mem.ptr(), mem.ptr()};
         c.set_xptr(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset));
 

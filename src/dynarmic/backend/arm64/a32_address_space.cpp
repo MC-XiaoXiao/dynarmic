@@ -577,11 +577,15 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     if (native_template->CodeSize() > GetRemainingSize())
         return {};
     UnprotectCodeMemory();
-    auto info = native_template->info;
+    // Keep mutable block-link metadata local. Fixed prelude relocations are
+    // immutable and can be borrowed while the caller pins the template.
+    EmittedBlockInfo info{};
     info.entry_point = code.xptr<CodePtr>();
+    info.size = native_template->info.size;
+    info.block_relocations = native_template->info.block_relocations;
     std::memcpy(info.entry_point, native_template->words.data(), info.size);
     code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
-    const auto& emitted = PublishBlock(native_template->location, std::move(info));
+    const auto& emitted = PublishBlock(native_template->location, std::move(info), native_template->info.relocations);
     const A32::LocationDescriptor start{native_template->location};
     const A32::LocationDescriptor end{native_template->end_location};
     block_ranges.AddRange(boost::icl::discrete_interval<u32>::closed(start.PC(), end.PC() - 1), start);
