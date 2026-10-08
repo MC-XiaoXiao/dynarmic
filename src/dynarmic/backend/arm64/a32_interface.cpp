@@ -17,6 +17,7 @@
 #include "dynarmic/backend/arm64/a32_jitstate.h"
 #include "dynarmic/backend/arm64/a32_ir_translator.h"
 #include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
+#include "dynarmic/backend/native_code_slab_lifetime.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/native_code_template.h"
@@ -191,7 +192,8 @@ struct Jit::Impl final {
             return;
         }
         std::unique_lock lock{invalidation_mutex};
-        invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(start_address, static_cast<u32>(start_address + length - 1)));
+        invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(
+            start_address, Backend::InclusiveRangeEnd(start_address, length)));
         HaltExecution(HaltReason::CacheInvalidation);
     }
 
