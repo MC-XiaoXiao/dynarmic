@@ -37,6 +37,7 @@ public:
     }
     CodePtr ReturnFromRunCode() const { return static_cast<CodePtr>(prelude_info.return_from_run_code); }
     A32::NativeCodeSlab::BlockDescriptor EmitShared(IR::Block& block, const A32::UserConfig& source);
+    A32::NativeCodeSlab::BlockDescriptor ImportTemplate(const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source);
     size_t SpaceRemaining() { return GetRemainingSize(); }
     void PublishBranchLinks(IR::LocationDescriptor descriptor) {
         RelinkBranchesForDescriptor(descriptor, Get(descriptor));
@@ -58,12 +59,14 @@ protected:
     void EmitPrelude();
     EmitConfig GetEmitConfig() override;
     void CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept override;
+    void CaptureEmittedBlock(const IR::Block& block, const EmittedBlockInfo& info) override;
     void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) override;
 
     const A32::UserConfig conf;
     BlockRangeInformation<u32> block_ranges;
 
 private:
+    std::shared_ptr<const A32::NativeCodeTemplate> emitted_template;
     const A32::UserConfig* emission_source{};
     const void* (*shared_lookup)(void*){};
     void* shared_lookup_arg{};

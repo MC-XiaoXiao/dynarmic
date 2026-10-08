@@ -176,6 +176,7 @@ if ("A32" IN_LIST DYNARMIC_FRONTENDS)
         interface/A32/a32.h
         interface/A32/arch_version.h
         interface/A32/config.h
+        interface/A32/native_code_template.h
         interface/A32/coprocessor.h
         interface/A32/coprocessor_util.h
         interface/A32/disassembler.h
@@ -386,6 +387,7 @@ if ("arm64" IN_LIST ARCHITECTURE)
         target_architecture_specific_sources(dynarmic "arm64"
             backend/arm64/a32_address_space.cpp
             backend/arm64/a32_address_space.h
+            backend/arm64/a32_native_code_template.h
             backend/arm64/a32_ir_translator.cpp
             backend/arm64/a32_ir_translator.h
             backend/arm64/a32_native_code_slab.cpp

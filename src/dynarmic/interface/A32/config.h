@@ -31,6 +31,7 @@ using VAddr = std::uint32_t;
 
 class Coprocessor;
 class NativeCodeSlab;
+class NativeCodeTemplate;
 
 enum class Exception {
     /// An UndefinedFault occured due to executing instruction with an unallocated encoding
@@ -106,6 +107,12 @@ struct UserCallbacks : public TranslateCallbacks {
             const Dynarmic::IR::Block& block) noexcept {
         CodeTranslationCompleted(location_descriptor, translation_nanoseconds, block);
     }
+
+    // Opt-in native compilation output, owning unlinked bytes independently
+    // of the producing cache. Clients validate guest identity/dependencies
+    // before importing it into another compatible Jit.
+    virtual void NativeCodeTemplateProduced(
+        std::shared_ptr<const NativeCodeTemplate> /*native_template*/) noexcept {}
 
     // Reads through these callbacks may not be aligned.
     // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
@@ -202,6 +209,10 @@ struct UserConfig {
     // ARM64 requires coprocessor state access through linked callbacks;
     // direct per-executor coprocessor pointers remain supported by local Jits.
     NativeCodeSlab* native_code_slab = nullptr;
+
+    // Capture relocatable native templates for eligible shared ARM64 blocks.
+    // Disabled by default; other host backends ignore this option.
+    bool enable_native_code_templates = false;
 
     // Optional executor-owned indirection used by generated host callbacks.
     // The link must remain alive for the Jit and contain a UserCallbacks*

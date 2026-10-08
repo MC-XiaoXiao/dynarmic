@@ -162,23 +162,28 @@ EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
 
     EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
 
-    ASSERT(block_entries.insert({block.Location(), block_info.entry_point}).second);
+    CaptureEmittedBlock(block, block_info);
+    const auto& cached_info = PublishBlock(block.Location(), std::move(block_info));
+    RegisterNewBasicBlock(block, cached_info);
+    return cached_info;
+}
+
+const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info) {
+    ASSERT(block_entries.insert({location, block_info.entry_point}).second);
     ASSERT(reverse_block_entries.empty() ||
            std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
     reverse_block_entries.emplace_hint(reverse_block_entries.end(),
-                                      block_info.entry_point, block.Location());
+                                      block_info.entry_point, location);
     ASSERT(block_infos.insert({block_info.entry_point, block_info}).second);
 
     Link(block_info);
     if (!defer_block_linking)
-        RelinkForDescriptor(block.Location(), block_info.entry_point);
+        RelinkForDescriptor(location, block_info.entry_point);
 
     mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point), block_info.size);
     ProtectCodeMemory();
 
-    RegisterNewBasicBlock(block, block_info);
-
-    return block_info;
+    return block_infos.at(block_info.entry_point);
 }
 
 void AddressSpace::Link(EmittedBlockInfo& block_info) {

@@ -19,6 +19,7 @@
 #include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/interface/A32/a32.h"
+#include "dynarmic/interface/A32/native_code_template.h"
 
 namespace Dynarmic::A32 {
 
@@ -116,6 +117,23 @@ struct Jit::Impl final {
             }
         }
         return current_address_space->Precompile(block);
+    }
+
+    NativeCodeImportOutcome PrecompileNativeCode(const NativeCodeTemplate& native_template) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        if (!shared_slab)
+            return NativeCodeImportOutcome::Unavailable;
+        try {
+            const auto block = shared_slab->import_template(native_template, shared_slab->generation(), conf);
+            if (!block.entrypoint)
+                return NativeCodeImportOutcome::Unavailable;
+            return block.newly_emitted ? NativeCodeImportOutcome::Imported : NativeCodeImportOutcome::AlreadyPresent;
+        } catch (...) {
+            shared_slab->request_cache_clear();
+            shared_slab->service_pending_invalidation();
+            return NativeCodeImportOutcome::Unavailable;
+        }
     }
 
     void SetPortableIRDemandProvider(PortableIRDemandProvider provider, void* user_arg) {
@@ -299,6 +317,8 @@ private:
             emitted = shared_slab->emit(ir, generation, conf);
             if (emitted.entrypoint) {
                 complete(emitted.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent);
+                if (!prepared && emitted.newly_emitted && emitted.native_template)
+                    GetA32RuntimeCallbacks(conf)->NativeCodeTemplateProduced(std::move(emitted.native_template));
                 if (!prepared && emitted.newly_emitted)
                     GetA32RuntimeCallbacks(conf)->CodeTranslationCompleted(descriptor.Value(),
                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()), ir);
@@ -392,6 +412,10 @@ Jit::Jit(UserConfig conf)
         : impl(std::make_unique<Impl>(this, conf)) {}
 
 Jit::~Jit() = default;
+
+Jit::NativeCodeImportOutcome Jit::PrecompileNativeCode(const NativeCodeTemplate& native_template) {
+    return impl->PrecompileNativeCode(native_template);
+}
 
 void Jit::PrepareRun() {
     impl->PrepareRun();

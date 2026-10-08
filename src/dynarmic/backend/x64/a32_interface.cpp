@@ -1302,6 +1302,15 @@ bool Jit::Precompile(IR::Block block) {
     return impl->Precompile(std::move(block));
 }
 
+Jit::NativeCodeImportOutcome Jit::PrecompileNativeCode(const NativeCodeTemplate&) {
+    return NativeCodeImportOutcome::Unavailable;
+}
+
+NativeCodeSlab::BlockDescriptor NativeCodeSlab::import_template(
+    const NativeCodeTemplate&, std::uint64_t, const UserConfig&) {
+    return {};
+}
+
 Jit::PortableIREmitOutcome Jit::PrecompileWithResult(IR::Block block) {
     return impl->PrecompileWithResult(std::move(block));
 }

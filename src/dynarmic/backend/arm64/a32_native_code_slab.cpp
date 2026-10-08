@@ -7,6 +7,7 @@
 #include "dynarmic/backend/native_code_slab_lifetime.h"
 #include "dynarmic/backend/arm64/a32_address_space.h"
 #include "dynarmic/backend/arm64/a32_jitstate.h"
+#include "dynarmic/interface/A32/native_code_template.h"
 #include "dynarmic/backend/arm64/devirtualize.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/interface/A32/coprocessor.h"
@@ -108,6 +109,27 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
             emitter->PublishBranchLinks(block.Location());
         pending_direct_link_targets.insert(block.Location());
         finish_pending_direct_link_publication();
+        return {emitted.entrypoint, emitted.size, current_generation, true, emitted.native_template};
+    }
+
+    BlockDescriptor import_template(const NativeCodeTemplate& native_template, u64 expected, const UserConfig& source) {
+        std::lock_guard lock{mutex};
+        if (!initialized || clear_pending || !pending_ranges.empty() || expected != current_generation)
+            return {};
+        const IR::LocationDescriptor location{native_template.LocationDescriptor()};
+        if (auto ptr = emitter->Get(location))
+            return {ptr, 0, current_generation, false};
+        if (emitter->SpaceRemaining() < 1024U * 1024U) {
+            request_generation_transition(GenerationTransitionKind::RecycleSegment);
+            return {};
+        }
+        const auto emitted = emitter->ImportTemplate(native_template, source);
+        if (!emitted.entrypoint)
+            return {};
+        if (active_executions != 0)
+            emitter->PublishBranchLinks(location);
+        pending_direct_link_targets.insert(location);
+        finish_pending_direct_link_publication();
         return {emitted.entrypoint, emitted.size, current_generation, true};
     }
 
@@ -203,6 +225,11 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     tsl::robin_set<IR::LocationDescriptor> pending_direct_link_targets;
     u64 segment_recycles{}, recycled_descriptors{}, recycled_code_bytes{}, full_generation_clears{};
 };
+
+NativeCodeSlab::BlockDescriptor NativeCodeSlab::import_template(
+        const NativeCodeTemplate& native_template, u64 generation, const UserConfig& source) {
+    return impl->import_template(native_template, generation, source);
+}
 
 #include "dynarmic/backend/native_code_slab_interface.inc"
 } // namespace Dynarmic::A32

@@ -55,6 +55,7 @@ public:
         std::size_t size{};
         std::uint64_t generation{};
         bool newly_emitted{};
+        std::shared_ptr<const NativeCodeTemplate> native_template;
     };
 
     NativeCodeSlab();
@@ -82,6 +83,8 @@ public:
     [[nodiscard]] BlockDescriptor emit(IR::Block& block,
                                        std::uint64_t expected_generation,
                                        const UserConfig& runtime_config);
+    [[nodiscard]] BlockDescriptor import_template(const NativeCodeTemplate& native_template,
+        std::uint64_t expected_generation, const UserConfig& runtime_config);
     [[nodiscard]] std::size_t space_remaining() const;
     void ensure_memory_committed(std::size_t codesize);
     void register_executor(void* storage, void* jit_state);
@@ -130,6 +133,8 @@ public:
         AlreadyPresent,
         EmitFailed,
     };
+
+    enum class NativeCodeImportOutcome : std::uint8_t { Imported, AlreadyPresent, Unavailable };
 
     // Optional host-side source for a previously validated portable IR block.
     // Dynarmic calls this only after a native code-cache miss and consumes the
@@ -199,6 +204,12 @@ public:
      * emitted native code, found an existing block, or failed to emit.
      */
     PortableIREmitOutcome PrecompileWithResult(IR::Block block);
+
+    // Copies an opaque, process-local template into this Jit's own cache and
+    // rebinds every prelude/block relocation. The caller must stop execution
+    // and validate complete guest code identity and constant dependencies.
+    // Returns Unavailable for incompatible configurations or unsupported hosts.
+    NativeCodeImportOutcome PrecompileNativeCode(const NativeCodeTemplate& native_template);
 
     /**
      * Installs an optional provider consumed at the true native-cache miss.

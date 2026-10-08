@@ -6,10 +6,12 @@
 #include "dynarmic/backend/arm64/a32_address_space.h"
 
 #include <atomic>
+#include <cstring>
 #include <utility>
 #include <mcl/scope_exit.hpp>
 
 #include "dynarmic/backend/arm64/a32_jitstate.h"
+#include "dynarmic/backend/arm64/a32_native_code_template.h"
 #include "dynarmic/backend/arm64/a32_ir_translator.h"
 #include "dynarmic/backend/arm64/a32_memory_execution_scope.h"
 #include "dynarmic/backend/arm64/abi.h"
@@ -547,9 +549,35 @@ void A32AddressSpace::EmitPrelude() {
 
 A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::EmitShared(IR::Block& block, const A32::UserConfig& source) {
     emission_source = &source;
-    SCOPE_EXIT { emission_source = nullptr; };
+    emitted_template.reset();
+    SCOPE_EXIT { emission_source = nullptr; emitted_template.reset(); };
     const auto& emitted = Emit(block);
-    return {emitted.entry_point, emitted.size};
+    return {emitted.entry_point, emitted.size, 0, false, std::move(emitted_template)};
+}
+
+void A32AddressSpace::CaptureEmittedBlock(const IR::Block& block, const EmittedBlockInfo& info) {
+    if (emission_source && A32NativeCodeTemplate::Eligible(*emission_source, block, info))
+        emitted_template = std::make_shared<const A32NativeCodeTemplate>(*emission_source, block, info);
+}
+
+A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
+        const A32::NativeCodeTemplate& opaque, const A32::UserConfig& source) {
+    const auto* native_template = dynamic_cast<const A32NativeCodeTemplate*>(&opaque);
+    if (!native_template || !native_template->Compatible(source))
+        return {};
+    EnsureEmissionSpace();
+    if (native_template->CodeSize() > GetRemainingSize())
+        return {};
+    UnprotectCodeMemory();
+    auto info = native_template->info;
+    info.entry_point = code.xptr<CodePtr>();
+    std::memcpy(info.entry_point, native_template->words.data(), info.size);
+    code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
+    const auto& emitted = PublishBlock(native_template->location, std::move(info));
+    const A32::LocationDescriptor start{native_template->location};
+    const A32::LocationDescriptor end{native_template->end_location};
+    block_ranges.AddRange(boost::icl::discrete_interval<u32>::closed(start.PC(), end.PC() - 1), start);
+    return {emitted.entry_point, emitted.size, 0, false, {}};
 }
 
 EmitConfig A32AddressSpace::GetEmitConfig() {

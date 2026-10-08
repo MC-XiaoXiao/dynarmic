@@ -56,6 +56,7 @@ public:
 protected:
     virtual EmitConfig GetEmitConfig() = 0;
     virtual void CodeTranslationCompleted(const IR::Block&, u64) const noexcept {}
+    virtual void CaptureEmittedBlock(const IR::Block&, const EmittedBlockInfo&) {}
     virtual void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) = 0;
 
     void ProtectCodeMemory() {
@@ -73,6 +74,7 @@ protected:
     size_t GetRemainingSize();
     void EnsureEmissionSpace();
     EmittedBlockInfo Emit(IR::Block& ir_block);
+    const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info);
     void Link(EmittedBlockInfo& block);
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
