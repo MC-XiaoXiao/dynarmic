@@ -543,7 +543,8 @@ void A32AddressSpace::EmitPrelude() {
 
     prelude_info.end_of_prelude = code.offset();
 
-    mem.invalidate_all();
+    // Only the emitted prelude needs instruction-cache synchronization.
+    mem.invalidate(mem.ptr(), static_cast<size_t>(prelude_info.end_of_prelude));
     ProtectCodeMemory();
 }
 
