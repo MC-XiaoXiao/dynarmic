@@ -96,7 +96,7 @@ const Block::InstructionList& Block::Instructions() const {
     return instructions;
 }
 
-Terminal Block::GetTerminal() const {
+const Terminal& Block::GetTerminal() const {
     return terminal;
 }
 
