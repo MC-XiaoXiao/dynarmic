@@ -293,6 +293,30 @@ private:
                 conf.native_code_block_lookup_callback(conf.native_code_block_lookup_callback_arg, descriptor.Value());
             return existing;
         }
+        if (conf.enable_native_code_templates && shared_slab->space_remaining() >= 1024U * 1024U) {
+            auto* callbacks = GetA32RuntimeCallbacks(conf);
+            if (auto native_template = callbacks->NativeCodeTemplateLookup(descriptor.Value())) {
+                NativeCodeSlab::BlockDescriptor imported;
+                bool import_failed = false;
+                try {
+                    if (native_template->LocationDescriptor() == descriptor.Value())
+                        imported = shared_slab->import_template(*native_template, generation, conf);
+                } catch (...) {
+                    // An allocation failure during publication may leave a
+                    // partial index. Retire this generation before resuming.
+                    import_failed = true;
+                    shared_slab->request_cache_clear();
+                }
+                callbacks->NativeCodeTemplateCompleted(descriptor.Value(), imported.entrypoint != nullptr, imported.newly_emitted);
+                if (import_failed)
+                    return {shared_slab->return_from_run_code(), 0, generation};
+                if (imported.entrypoint) {
+                    if (shared_fast_dispatch && active_generation != 0)
+                        shared_fast_dispatch->Publish(descriptor, reinterpret_cast<CodePtr>(const_cast<void*>(imported.entrypoint)));
+                    return imported;
+                }
+            }
+        }
         const auto started = std::chrono::steady_clock::now();
         auto* prepared = portable_provider ? portable_provider(portable_provider_arg, descriptor.Value(), generation) : nullptr;
         bool completed = false;

@@ -557,8 +557,14 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::EmitShared(IR::Block& bloc
 
 void A32AddressSpace::CaptureEmittedBlock(const IR::Block& block, const EmittedBlockInfo& info) {
     if (emission_source && A32NativeCodeTemplate::Eligible(*emission_source, block, info) &&
-        NativeTemplateConfiguration(*emission_source) == NativeTemplateConfiguration(conf))
-        emitted_template = std::make_shared<const A32NativeCodeTemplate>(*emission_source, block, info);
+        NativeTemplateConfiguration(*emission_source) == NativeTemplateConfiguration(conf)) {
+        try {
+            emitted_template = std::make_shared<const A32NativeCodeTemplate>(*emission_source, block, info);
+        } catch (...) {
+            // Capturing an optional template must not fail ordinary emission.
+            emitted_template.reset();
+        }
+    }
 }
 
 A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(

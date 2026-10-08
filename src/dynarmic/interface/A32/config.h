@@ -114,6 +114,16 @@ struct UserCallbacks : public TranslateCallbacks {
     virtual void NativeCodeTemplateProduced(
         std::shared_ptr<const NativeCodeTemplate> /*native_template*/) noexcept {}
 
+    // Optional same-process native template lookup at a true shared-cache miss.
+    // Runs with the memory execution lease suspended. The client must validate
+    // full guest identity/layout and constant dependencies here. In-memory
+    // lookup/allocation is allowed; filesystem I/O and Jit re-entry are not.
+    // The returned ownership remains pinned through import and completion.
+    virtual std::shared_ptr<const NativeCodeTemplate> NativeCodeTemplateLookup(
+        std::uint64_t /*location_descriptor*/) noexcept { return {}; }
+    virtual void NativeCodeTemplateCompleted(std::uint64_t /*location_descriptor*/,
+        bool /*imported*/, bool /*newly_emitted*/) noexcept {}
+
     // Reads through these callbacks may not be aligned.
     // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
     virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;
