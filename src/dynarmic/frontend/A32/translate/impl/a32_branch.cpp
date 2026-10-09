@@ -11,12 +11,18 @@ namespace Dynarmic::A32 {
 
 // B <label>
 bool TranslatorVisitor::arm_B(Cond cond, Imm<24> imm24) {
+    const u32 imm32 = mcl::bit::sign_extend<26, u32>(imm24.ZeroExtend() << 2) + 8;
+    const auto new_location = ir.current_location.AdvancePC(imm32);
+    // A conditional direct branch can terminate an unconditional block using
+    // its current flags, without a separate condition-only entry block.
+    if (cond_state == ConditionalState::None && cond != Cond::AL && cond != Cond::NV) {
+        ir.SetTerm(IR::Term::If{cond, IR::Term::LinkBlock{new_location},
+            IR::Term::LinkBlock{ir.current_location.AdvancePC(4)}});
+        return false;
+    }
     if (!ArmConditionPassed(cond)) {
         return true;
     }
-
-    const u32 imm32 = mcl::bit::sign_extend<26, u32>(imm24.ZeroExtend() << 2) + 8;
-    const auto new_location = ir.current_location.AdvancePC(imm32);
     ir.SetTerm(IR::Term::LinkBlock{new_location});
     return false;
 }
