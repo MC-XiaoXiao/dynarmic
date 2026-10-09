@@ -99,7 +99,9 @@ protected:
     // Native addresses increase until a full clear. Keep reverse lookups
     // contiguous instead of allocating a tree node for every compiled block.
     boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
-    tsl::robin_map<CodePtr, EmittedBlockInfo> block_infos;
+    // Native entries are appended in address order within each generation.
+    // A packed index avoids empty hash buckets carrying full block metadata.
+    boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
     tsl::robin_map<IR::LocationDescriptor, tsl::robin_set<CodePtr>> block_references;
 
     ExceptionHandler exception_handler;

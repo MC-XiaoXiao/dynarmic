@@ -131,7 +131,7 @@ void AddressSpace::ClearCache() {
     block_entries.clear();
     // Clearing a cache releases the reverse index, including its capacity.
     decltype(reverse_block_entries){}.swap(reverse_block_entries);
-    block_infos.clear();
+    decltype(block_infos){}.swap(block_infos);
     block_references.clear();
     code.set_offset(prelude_info.end_of_prelude);
 }
