@@ -49,6 +49,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (initialized) {
             const auto& old = *conf;
             if (config.code_cache_size != old.code_cache_size || config.arch_version != old.arch_version ||
+                config.fast_compilation != old.fast_compilation ||
                 config.optimizations != old.optimizations || config.unsafe_optimizations != old.unsafe_optimizations ||
                 config.define_unpredictable_behaviour != old.define_unpredictable_behaviour ||
                 config.hook_hint_instructions != old.hook_hint_instructions || config.hook_isb != old.hook_isb ||

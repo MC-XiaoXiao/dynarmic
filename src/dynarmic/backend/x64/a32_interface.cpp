@@ -305,7 +305,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     void initialize(A32::UserConfig config, A32::Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared) {
         std::lock_guard lock{mutex};
         if (initialized) {
-            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.enable_host_execution_block_budget != conf->enable_host_execution_block_budget || config.always_little_endian != conf->always_little_endian || bool(config.instruction_page_table) != bool(conf->instruction_page_table)) {
+            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.fast_compilation != conf->fast_compilation || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.enable_host_execution_block_budget != conf->enable_host_execution_block_budget || config.always_little_endian != conf->always_little_endian || bool(config.instruction_page_table) != bool(conf->instruction_page_table)) {
                 throw std::invalid_argument{
                     "native code slab configuration mismatch"};
             }
@@ -1175,8 +1175,10 @@ private:
                         conf.check_halt_on_memory_access});
             Optimization::DeadCodeElimination(ir_block);
         }
-        if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-            Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
+        if (conf.HasOptimization(OptimizationFlag::ConstProp) &&
+            (!conf.fast_compilation || ir_block.size() > UserConfig::fast_compilation_max_unfolded_instructions)) {
+            if (!conf.fast_compilation)
+                Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
             Optimization::ConstantPropagation(ir_block);
             Optimization::DeadCodeElimination(ir_block);
         }

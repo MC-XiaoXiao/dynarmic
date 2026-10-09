@@ -289,6 +289,13 @@ struct UserConfig {
     /// This is intended to be used for debugging.
     OptimizationFlag optimizations = all_safe_optimizations;
 
+    /// Reduce cold compilation work: defer scalar folding on small IR blocks,
+    /// avoid callback-based constant-memory specialization, and omit release
+    /// IR verification. State-access cleanup and folding of larger blocks stay
+    /// enabled to avoid excessive register allocation and native code growth.
+    bool fast_compilation = false;
+    static constexpr std::size_t fast_compilation_max_unfolded_instructions = 64;
+
     bool HasOptimization(OptimizationFlag f) const {
         if (!unsafe_optimizations) {
             f &= all_safe_optimizations;

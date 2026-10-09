@@ -18,15 +18,22 @@ IR::Block TranslateA32IR(const A32::UserConfig& conf, IR::LocationDescriptor des
                     conf.check_halt_on_memory_access});
         Optimization::DeadCodeElimination(ir_block);
     }
-    if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-        Optimization::A32ConstantMemoryReads(ir_block, callbacks);
+    if (conf.HasOptimization(OptimizationFlag::ConstProp) &&
+        (!conf.fast_compilation || ir_block.size() > A32::UserConfig::fast_compilation_max_unfolded_instructions)) {
+        if (!conf.fast_compilation)
+            Optimization::A32ConstantMemoryReads(ir_block, callbacks);
         Optimization::ConstantPropagation(ir_block);
         Optimization::DeadCodeElimination(ir_block);
     }
     Optimization::IdentityRemovalPass(ir_block);
     // Get/set elimination can insert new values after the first naming pass.
     Optimization::NamingPass(ir_block);
+#ifndef NDEBUG
     Optimization::VerificationPass(ir_block);
+#else
+    if (!conf.fast_compilation)
+        Optimization::VerificationPass(ir_block);
+#endif
 
     return ir_block;
 }
