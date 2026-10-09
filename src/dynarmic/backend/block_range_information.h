@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
@@ -80,7 +81,22 @@ private:
     using DescriptorSet = boost::container::flat_set<IR::LocationDescriptor,
         std::less<IR::LocationDescriptor>,
         boost::container::small_vector<IR::LocationDescriptor, 1>>;
-    boost::icl::interval_map<ProgramCounterType, DescriptorSet> block_ranges;
+    using RangeMap = boost::icl::interval_map<ProgramCounterType, DescriptorSet>;
+    RangeMap block_ranges;
+    // A hint belongs to this map. Discard it on either side of a move,
+    // as well as before operations that can erase its node.
+    struct InsertionHint {
+        std::optional<typename RangeMap::iterator> position;
+
+        InsertionHint() = default;
+        InsertionHint(InsertionHint&& other) noexcept { other.position.reset(); }
+        InsertionHint& operator=(InsertionHint&& other) noexcept {
+            position.reset();
+            other.position.reset();
+            return *this;
+        }
+    };
+    InsertionHint insertion_hint;
     tsl::robin_map<IR::LocationDescriptor, DescriptorRanges> ranges_by_descriptor;
     std::size_t range_count{};
     std::uint64_t invalidated_descriptors{};

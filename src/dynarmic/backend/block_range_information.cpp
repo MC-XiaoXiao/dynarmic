@@ -5,6 +5,8 @@
 
 #include "dynarmic/backend/block_range_information.h"
 
+#include <iterator>
+
 #include <boost/icl/interval_map.hpp>
 #include <boost/icl/interval_set.hpp>
 #include <mcl/stdint.hpp>
@@ -14,8 +16,16 @@ namespace Dynarmic::Backend {
 
 template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location) {
-    // Favor ascending code ranges without retaining an invalidatable iterator.
-    block_ranges.add(block_ranges.end(), std::make_pair(range, DescriptorSet{location}));
+    // Compilation tends to visit neighboring guest blocks even when their
+    // image is in the middle of the map. ICL still handles arbitrary order,
+    // overlapping intervals and codomain merging through its normal add path.
+    const auto hint = insertion_hint.position ? std::next(*insertion_hint.position) : block_ranges.end();
+    const auto inserted_range = block_ranges.add(hint, std::make_pair(range, DescriptorSet{location}));
+    if (inserted_range == block_ranges.end()) {
+        insertion_hint.position.reset();
+    } else {
+        insertion_hint.position = inserted_range;
+    }
 
     auto [descriptor_it, inserted] = ranges_by_descriptor.try_emplace(location, range);
     auto& descriptor_ranges = descriptor_it.value();
@@ -35,6 +45,7 @@ void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_in
 
 template<typename ProgramCounterType>
 void BlockRangeInformation<ProgramCounterType>::ClearCache() {
+    insertion_hint.position.reset();
     block_ranges.clear();
     // A full cache release must also return the hash table's bucket storage.
     decltype(ranges_by_descriptor){}.swap(ranges_by_descriptor);
@@ -63,6 +74,9 @@ void BlockRangeInformation<ProgramCounterType>::InvalidateLocations(
     // A descriptor is invalidated as a unit. Removing only one interval would
     // leave its other old ranges discoverable by a later invalidation. This
     // exact-location path is also used when a host-code segment is recycled.
+    if (!locations.empty()) {
+        insertion_hint.position.reset();
+    }
     invalidated_descriptors += locations.size();
     for (const auto& descriptor : locations) {
         const auto descriptor_it = ranges_by_descriptor.find(descriptor);
