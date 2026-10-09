@@ -1727,6 +1727,20 @@ typedef enum {
 
 class CodeGenerator : public CodeArray {
 public:
+	// Optional provenance for clients that copy generated code. Offsets are
+	// relative to getCode(); forward label fields are resolved before use.
+	struct EncodedReference {
+		enum Kind { Branch, RipMemory, Absolute };
+		size_t offset, instructionEnd;
+		unsigned width;
+		Kind kind;
+	};
+	typedef void (*ReferenceObserver)(void *, const EncodedReference&);
+	void setReferenceObserver(ReferenceObserver observer, void *context = 0)
+	{
+		referenceObserver_ = observer;
+		referenceContext_ = context;
+	}
 	enum LabelType {
 		T_SHORT,
 		T_NEAR,
@@ -1734,6 +1748,12 @@ public:
 		T_AUTO // T_SHORT if possible
 	};
 private:
+	ReferenceObserver referenceObserver_ = 0;
+	void *referenceContext_ = 0;
+	void recordReference(size_t offset, size_t end, unsigned width, EncodedReference::Kind kind)
+	{
+		if (referenceObserver_) referenceObserver_(referenceContext_, EncodedReference{offset, end, width, kind});
+	}
 	CodeGenerator operator=(const CodeGenerator&); // don't call
 #ifdef XBYAK64
 	enum { i32e = 32 | 64, BIT = 64 };
@@ -2149,6 +2169,7 @@ private:
 	{
 		if (type == T_FAR) XBYAK_THROW(ERR_NOT_SUPPORTED)
 		if (isAutoGrow() && size_ + 16 >= maxSize_) growMemory(); /* avoid splitting code of jmp */
+		const size_t start = size_;
 		size_t offset = 0;
 		if (labelMgr_.getOffset(&offset, label)) { /* label exists */
 			makeJmp(inner::VerifyInInt32(offset - size_), type, shortCode, longCode, longPref);
@@ -2165,10 +2186,13 @@ private:
 			JmpLabel jmp(size_, jmpSize, inner::LasIs);
 			labelMgr_.addUndefinedLabel(label, jmp);
 		}
+		const unsigned width = size_ - start == 2 ? 1 : 4;
+		recordReference(size_ - width, size_, width, EncodedReference::Branch);
 	}
 	void opJmpAbs(const void *addr, LabelType type, uint8_t shortCode, uint8_t longCode, uint8_t longPref = 0)
 	{
 		if (type == T_FAR) XBYAK_THROW(ERR_NOT_SUPPORTED)
+		const size_t start = size_;
 		if (isAutoGrow()) {
 			if (!isNEAR(type)) XBYAK_THROW(ERR_ONLY_T_NEAR_IS_SUPPORTED_IN_AUTO_GROW)
 			if (size_ + 16 >= maxSize_) growMemory();
@@ -2179,7 +2203,8 @@ private:
 		} else {
 			makeJmp(inner::VerifyInInt32(reinterpret_cast<const uint8_t*>(addr) - getCurr()), type, shortCode, longCode, longPref);
 		}
-
+		const unsigned width = size_ - start == 2 ? 1 : 4;
+		recordReference(size_ - width, size_, width, EncodedReference::Branch);
 	}
 	void opJmpOp(const Operand& op, LabelType type, int ext)
 	{
@@ -2210,6 +2235,7 @@ private:
 				}
 				dd(inner::VerifyInInt32(disp));
 			}
+			recordReference(size_ - 4, size_ + addr.immSize, 4, EncodedReference::RipMemory);
 		}
 	}
 	void opSSE(const Reg& r, const Operand& op, uint64_t type, int code, bool isValid(const Operand&, const Operand&), int imm8 = NONE)
@@ -2450,6 +2476,7 @@ private:
 	{
 		const int jmpSize = relative ? 4 : (int)sizeof(size_t);
 		if (isAutoGrow() && size_ + 16 >= maxSize_) growMemory();
+		if (!relative) recordReference(size_, size_ + jmpSize, jmpSize, EncodedReference::Absolute);
 		size_t offset = 0;
 		if (labelMgr_.getOffset(&offset, label)) {
 			if (relative) {
@@ -2986,6 +3013,7 @@ public:
 				rex(*reg);
 				db(op1.isREG(8) ? 0xA0 : op1.isREG() ? 0xA1 : op2.isREG(8) ? 0xA2 : 0xA3);
 				db(addr->getDisp(), 8);
+				recordReference(size_ - 8, size_, 8, EncodedReference::Absolute);
 			} else {
 				XBYAK_THROW(ERR_BAD_COMBINATION)
 			}
@@ -3006,6 +3034,7 @@ public:
 		if (op.isREG()) {
 			const int size = mov_imm(op.getReg(), imm);
 			db(imm, size);
+			if (size == 8) recordReference(size_ - 8, size_, 8, EncodedReference::Absolute);
 		} else if (op.isMEM()) {
 			verifyMemHasSize(op);
 			int immSize = op.getBit() / 8;
