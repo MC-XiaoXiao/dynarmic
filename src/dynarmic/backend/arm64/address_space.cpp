@@ -329,7 +329,7 @@ void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation
     }
 
     for (auto [target_descriptor, list] : block_info.BlockRelocations()) {
-        block_references[target_descriptor].insert(block_info.entry_point);
+        block_references.emplace(target_descriptor, block_info.entry_point);
         LinkBlockLinks(block_info.entry_point, Get(target_descriptor), list);
     }
 }
@@ -385,10 +385,11 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
     // AArch64 permits concurrent NOP/B replacement: an executor may take
     // either the correct dispatcher fallback or the synchronized new target.
     // ADRL is a multi-instruction update and still requires quiescence.
-    const auto references = block_references.find(target_descriptor);
-    if (!target_ptr || references == block_references.end())
+    if (!target_ptr)
         return;
-    for (const auto source : references->second) {
+    const auto [first, last] = block_references.equal_range(target_descriptor);
+    for (auto reference = first; reference != last; ++reference) {
+        const auto source = reference->second;
         const auto info = block_infos.find(source);
         if (info == block_infos.end())
             continue;
@@ -416,10 +417,9 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
 }
 
 void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {
-    const auto references = block_references.find(target_descriptor);
-    if (references == block_references.end())
-        return;
-    for (auto code_ptr : references->second) {
+    const auto [first, last] = block_references.equal_range(target_descriptor);
+    for (auto reference = first; reference != last; ++reference) {
+        const auto code_ptr = reference->second;
         if (auto block_iter = block_infos.find(code_ptr); block_iter != block_infos.end()) {
             const EmittedBlockInfo& block_info = block_iter->second;
 

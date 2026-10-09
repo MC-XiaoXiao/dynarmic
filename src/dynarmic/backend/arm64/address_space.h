@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 
 #include <boost/container/flat_map.hpp>
 #include <mcl/stdint.hpp>
@@ -102,7 +103,9 @@ protected:
     // Native entries are appended in address order within each generation.
     // A packed index avoids empty hash buckets carrying full block metadata.
     boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
-    tsl::robin_map<IR::LocationDescriptor, tsl::robin_set<CodePtr>> block_references;
+    // Keep one node per incoming edge. Hash buckets contain pointers rather
+    // than a full set/vector for every target and every unused bucket.
+    std::unordered_multimap<IR::LocationDescriptor, CodePtr> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;
