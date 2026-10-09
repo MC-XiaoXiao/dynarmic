@@ -322,6 +322,9 @@ if ("x86_64" IN_LIST ARCHITECTURE)
             backend/x64/a32_emit_x64.cpp
             backend/x64/a32_emit_x64.h
             backend/x64/a32_emit_x64_memory.cpp
+            backend/x64/a32_native_code_template.h
+            backend/x64/native_code_relocation.cpp
+            backend/x64/native_code_relocation.h
             backend/x64/a32_interface.cpp
             backend/x64/a32_jitstate.cpp
             backend/x64/a32_jitstate.h

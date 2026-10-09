@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <mcl/stdint.hpp>
@@ -55,6 +56,10 @@ public:
     static ArgCallback FromLink(ArgCallback callback, std::size_t link_offset) {
         callback.link_offset = link_offset;
         return callback;
+    }
+
+    std::pair<u64, u64> Binding(u64 object_base) const {
+        return {reinterpret_cast<u64>(fn), arg - object_base};
     }
 
     using Callback::EmitCall;

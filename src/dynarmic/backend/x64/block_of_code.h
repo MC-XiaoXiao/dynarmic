@@ -20,6 +20,7 @@
 #include "dynarmic/backend/x64/constant_pool.h"
 #include "dynarmic/backend/x64/host_feature.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
+#include "dynarmic/backend/x64/native_code_relocation.h"
 #include "dynarmic/common/cast_util.h"
 #include "dynarmic/interface/halt_reason.h"
 #include "dynarmic/ir/cond.h"
@@ -33,6 +34,7 @@ struct RunCodeCallbacks {
     std::unique_ptr<Callback> AddTicks;
     std::unique_ptr<Callback> GetTicksRemaining;
     bool enable_cycle_counting;
+    bool capture_native_references = false;
 };
 
 class BlockOfCode final : public Xbyak::CodeGenerator {
@@ -133,6 +135,11 @@ public:
 
     CodePtr GetCodeBegin() const;
     size_t GetTotalCodeSize() const;
+    const ConstantPool& Constants() const { return constant_pool; }
+    NativeReferenceRecorder& PreludeReferences() { return prelude_references; }
+    std::optional<const void*> InternConstant(u64 lower, u64 upper) {
+        return constant_pool.Intern(lower, upper);
+    }
 
     const void* GetReturnFromRunCodeAddress() const {
         return return_from_run_code[0];
@@ -177,6 +184,7 @@ public:
     bool HasHostFeature(HostFeature feature) const {
         return (host_features & feature) == feature;
     }
+    HostFeature HostFeatures() const { return host_features; }
 
 private:
     RunCodeCallbacks cb;
@@ -200,6 +208,7 @@ private:
     void GenRunCode(std::function<void(BlockOfCode&)> rcp);
 
     const HostFeature host_features;
+    NativeReferenceRecorder prelude_references{*this};
 };
 
 }  // namespace Dynarmic::Backend::X64

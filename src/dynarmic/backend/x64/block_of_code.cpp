@@ -227,10 +227,12 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
         , host_features(GetHostFeatures()) {
     EnableWriting();
     EnsureMemoryCommitted(PRELUDE_COMMIT_SIZE);
+    prelude_references.Begin(this->cb.capture_native_references);
     GenRunCode(rcp);
 }
 
 void BlockOfCode::PreludeComplete() {
+    prelude_references.Finish();
     prelude_complete = true;
     code_begin = getCurr();
     ClearCache();

@@ -38,6 +38,7 @@
 #include "dynarmic/common/x64_disassemble.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
 #include "dynarmic/interface/A32/a32.h"
+#include "dynarmic/interface/A32/native_code_template.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
 #include "dynarmic/ir/opt/passes.h"
@@ -71,6 +72,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
         GenRuntimeCallback<&A32::UserCallbacks::AddTicks>(cb, conf),
         GenRuntimeCallback<&A32::UserCallbacks::GetTicksRemaining>(cb, conf),
         conf.enable_cycle_counting,
+        conf.enable_native_code_templates,
     };
 }
 
@@ -419,7 +421,31 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         }
         return BlockDescriptor{
             result.entrypoint, result.size, current_generation,
-            result.entrypoint != nullptr};
+            result.entrypoint != nullptr, emitter->TakeNativeTemplate()};
+    }
+
+    [[nodiscard]] BlockDescriptor import_template(const NativeCodeTemplate& native_template,
+        std::uint64_t expected_generation, const UserConfig& source) {
+        std::lock_guard lock{mutex};
+        if (!initialized || !shared_mode || !source.enable_native_code_templates ||
+            clear_pending || !pending_ranges.empty() || expected_generation != current_generation)
+            return {};
+        const IR::LocationDescriptor location{native_template.LocationDescriptor()};
+        if (const auto existing = emitter->GetBasicBlock(location))
+            return {existing->entrypoint, existing->size, current_generation, false, {}};
+        if (native_template.CodeSize() > std::numeric_limits<size_t>::max() - 16U)
+            return {};
+        const auto required = std::max<size_t>(1024U * 1024U, native_template.CodeSize() + 16U);
+        if (active_segment_space_remaining() < required)
+            return {};
+        block_of_code->EnsureMemoryCommitted(required);
+        const auto result = emitter->ImportTemplate(native_template, source);
+        if (result.entrypoint) {
+            publish_direct_link_target(location, result.entrypoint);
+            update_active_segment_usage();
+            touch_code_segment(result.entrypoint);
+        }
+        return {result.entrypoint, result.size, current_generation, result.entrypoint != nullptr, {}};
     }
 
     [[nodiscard]] std::size_t space_remaining() const {
@@ -821,6 +847,21 @@ struct Jit::Impl {
             descriptor.Value(), translation_nanoseconds, ir_block);
     }
 
+    NativeCodeImportOutcome PrecompileNativeCode(const NativeCodeTemplate& native_template) {
+        ASSERT(!jit_interface->is_executing);
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        try {
+            const auto block = native_code_slab->import_template(native_template, native_code_slab->generation(), conf);
+            if (!block.entrypoint)
+                return NativeCodeImportOutcome::Unavailable;
+            return block.newly_emitted ? NativeCodeImportOutcome::Imported : NativeCodeImportOutcome::AlreadyPresent;
+        } catch (...) {
+            abandon_portable_emit();
+            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            return NativeCodeImportOutcome::Unavailable;
+        }
+    }
+
     PortableIREmitOutcome PrecompileWithResult(IR::Block block) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
@@ -1063,6 +1104,25 @@ private:
             return block;
         }
 
+        if (conf.enable_native_code_templates && native_code_slab->space_remaining() >= 1024U * 1024U) {
+            if (auto native_template = conf.callbacks->NativeCodeTemplateLookup(descriptor.Value())) {
+                NativeCodeSlab::BlockDescriptor imported;
+                bool import_failed = false;
+                try {
+                    if (native_template->LocationDescriptor() == descriptor.Value())
+                        imported = native_code_slab->import_template(*native_template, generation, conf);
+                } catch (...) {
+                    import_failed = true;
+                    abandon_portable_emit();
+                }
+                conf.callbacks->NativeCodeTemplateCompleted(descriptor.Value(), imported.entrypoint != nullptr, imported.newly_emitted);
+                if (import_failed)
+                    return {native_code_slab->return_from_run_code(), 0, generation};
+                if (imported.entrypoint)
+                    return imported;
+            }
+        }
+
         const auto translation_started = std::chrono::steady_clock::now();
 
         bool portable_completion_called = false;
@@ -1158,6 +1218,8 @@ private:
                 std::chrono::steady_clock::now() - translation_started)
                 .count());
         if (emitted.newly_emitted) {
+            if (emitted.native_template)
+                conf.callbacks->NativeCodeTemplateProduced(std::move(emitted.native_template));
             conf.callbacks->CodeTranslationCompleted(
                 descriptor.Value(), translation_nanoseconds, ir_block);
         }
@@ -1304,13 +1366,13 @@ bool Jit::Precompile(IR::Block block) {
     return impl->Precompile(std::move(block));
 }
 
-Jit::NativeCodeImportOutcome Jit::PrecompileNativeCode(const NativeCodeTemplate&) {
-    return NativeCodeImportOutcome::Unavailable;
+Jit::NativeCodeImportOutcome Jit::PrecompileNativeCode(const NativeCodeTemplate& native_template) {
+    return impl->PrecompileNativeCode(native_template);
 }
 
 NativeCodeSlab::BlockDescriptor NativeCodeSlab::import_template(
-    const NativeCodeTemplate&, std::uint64_t, const UserConfig&) {
-    return {};
+    const NativeCodeTemplate& native_template, std::uint64_t generation, const UserConfig& conf) {
+    return impl->import_template(native_template, generation, conf);
 }
 
 Jit::PortableIREmitOutcome Jit::PrecompileWithResult(IR::Block block) {

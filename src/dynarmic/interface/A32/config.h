@@ -220,8 +220,8 @@ struct UserConfig {
     // direct per-executor coprocessor pointers remain supported by local Jits.
     NativeCodeSlab* native_code_slab = nullptr;
 
-    // Capture relocatable native templates for eligible shared ARM64 blocks.
-    // Disabled by default; other host backends ignore this option.
+    // Capture relocatable native templates for eligible shared ARM64/x64 blocks.
+    // Disabled by default; unsupported configurations retain ordinary translation.
     bool enable_native_code_templates = false;
 
     // Optional executor-owned indirection used by generated host callbacks.

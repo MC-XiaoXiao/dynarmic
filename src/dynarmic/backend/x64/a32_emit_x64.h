@@ -19,6 +19,7 @@
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/emit_x64.h"
 #include "dynarmic/backend/x64/memory_fallback_table.h"
+#include "dynarmic/backend/x64/native_code_relocation.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
@@ -27,6 +28,7 @@
 namespace Dynarmic::Backend::X64 {
 
 class RegAlloc;
+struct A32NativeTemplateEnvironment;
 
 struct A32EmitContext final : public EmitContext {
     A32EmitContext(const A32::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, std::deque<Xbyak::Label>& labels);
@@ -65,6 +67,8 @@ public:
      * @note block is modified.
      */
     BlockDescriptor Emit(IR::Block& block);
+    BlockDescriptor ImportTemplate(const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source);
+    std::shared_ptr<const A32::NativeCodeTemplate> TakeNativeTemplate();
 
     void ClearCache() override;
 
@@ -110,6 +114,14 @@ protected:
     std::map<const u8*, IR::LocationDescriptor, std::less<>>
         blocks_by_entrypoint;
     std::uint64_t retired_code_bytes{};
+    std::shared_ptr<const A32NativeTemplateEnvironment> native_environment;
+    std::shared_ptr<const A32::NativeCodeTemplate> produced_native_template;
+    const u8* native_capture_entry{};
+    std::vector<NativeBlockLink> native_block_links;
+    NativeReferenceRecorder native_references{code};
+    void RecordNativeLink(NativeBlockLink::Kind kind, const IR::LocationDescriptor& target);
+    BlockDescriptor PublishBlock(IR::LocationDescriptor location, IR::LocationDescriptor end_location,
+        const u8* entrypoint, size_t size);
 
     void EmitInstructionFetch(A32EmitContext& ctx);
     void EmitCondPrelude(const A32EmitContext& ctx);

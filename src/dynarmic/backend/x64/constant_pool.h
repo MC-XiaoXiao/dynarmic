@@ -7,6 +7,7 @@
 
 #include <bit>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -27,6 +28,9 @@ public:
     ConstantPool(BlockOfCode& code, size_t size);
 
     Xbyak::Address GetConstant(const Xbyak::AddressFrame& frame, u64 lower, u64 upper = 0);
+    std::optional<const void*> Intern(u64 lower, u64 upper);
+    std::span<const std::pair<u64, u64>> Storage() const { return pool; }
+    std::span<const std::pair<u64, u64>> Used() const { return pool.first(insertion_point); }
 
 private:
     static constexpr size_t align_size = 16;  // bytes

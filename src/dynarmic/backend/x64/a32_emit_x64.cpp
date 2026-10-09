@@ -4,6 +4,7 @@
  */
 
 #include "dynarmic/backend/x64/a32_emit_x64.h"
+#include "dynarmic/backend/x64/a32_native_code_template.h"
 
 #include <algorithm>
 #include <limits>
@@ -106,6 +107,14 @@ A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_in
     GenFastmemFallbacks();
     GenTerminalHandlers();
     code.PreludeComplete();
+    if (this->conf.enable_native_code_templates && NativeTemplateRuntimeIsLinked(this->conf)) {
+        try {
+            native_environment = std::make_shared<const A32NativeTemplateEnvironment>(this->conf, code);
+        } catch (...) {
+            // Optional relocation metadata must not prevent ordinary Jit use.
+        }
+    }
+    code.PreludeReferences().ReleaseStorage();
     ClearFastDispatchTable();
 
     exception_handler.SetFastmemCallback([this](u64 rip_) {
@@ -116,6 +125,8 @@ A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_in
 A32EmitX64::~A32EmitX64() = default;
 
 A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
+    produced_native_template.reset();
+    native_block_links.clear();
     if (conf.very_verbose_debugging_output) {
         std::puts(IR::DumpBlock(block).c_str());
     }
@@ -135,6 +146,10 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     // Start emitting.
     code.align();
     const u8* const entrypoint = code.getCurr();
+    native_capture_entry = native_environment && native_environment->prelude &&
+        A32NativeCodeTemplate::Eligible(block) ? entrypoint : nullptr;
+    native_references.Begin(native_capture_entry != nullptr);
+    SCOPE_EXIT { native_references.Finish(); native_capture_entry = nullptr; };
 
     EmitInstructionFetch(ctx);
     EmitCondPrelude(ctx);
@@ -184,9 +199,26 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     code.int3();
 
     const size_t size = static_cast<size_t>(code.getCurr() - entrypoint);
+    native_references.Finish();
 
-    const A32::LocationDescriptor descriptor{block.Location()};
-    const A32::LocationDescriptor end_location{block.EndLocation()};
+    if (native_capture_entry) {
+        try {
+            if (auto relocations = NativeCodeRelocations::Capture(code, {entrypoint, size}, native_block_links, native_references))
+                produced_native_template = std::make_shared<const A32NativeCodeTemplate>(native_environment,
+                    block, std::vector<u8>{entrypoint, entrypoint + size}, std::move(*relocations), native_block_links);
+        } catch (...) {
+            // Optional capture must not discard a successfully emitted block.
+        }
+    }
+    native_capture_entry = nullptr;
+    return PublishBlock(block.Location(), block.EndLocation(), entrypoint, size);
+}
+
+A32EmitX64::BlockDescriptor A32EmitX64::PublishBlock(IR::LocationDescriptor location,
+    IR::LocationDescriptor end, const u8* entrypoint, size_t size) {
+
+    const A32::LocationDescriptor descriptor{location};
+    const A32::LocationDescriptor end_location{end};
 
     const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), end_location.PC() - 1);
     block_ranges.AddRange(range, descriptor);
@@ -196,7 +228,63 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     return registered;
 }
 
+std::shared_ptr<const A32::NativeCodeTemplate> A32EmitX64::TakeNativeTemplate() {
+    return std::exchange(produced_native_template, {});
+}
+
+void A32EmitX64::RecordNativeLink(NativeBlockLink::Kind kind, const IR::LocationDescriptor& target) {
+    if (native_capture_entry) {
+        try {
+            native_block_links.push_back({kind, static_cast<u32>(code.getCurr() - native_capture_entry), target.Value()});
+        } catch (...) {
+            native_capture_entry = nullptr;
+            native_references.Finish();
+        }
+    }
+}
+
+A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
+    const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source) {
+    const auto* const captured = dynamic_cast<const A32NativeCodeTemplate*>(&native_template);
+    if (!captured || !native_environment ||
+        !captured->environment->Compatible(source, *native_environment) ||
+        captured->bytes.empty() || code.SpaceRemaining() < 16 || captured->bytes.size() > code.SpaceRemaining() - 16)
+        return {};
+    auto bytes = captured->bytes;
+    code.EnableWriting();
+    SCOPE_EXIT { code.DisableWriting(); };
+    const auto* const saved = code.getCurr();
+    code.align();
+    const auto* const entrypoint = code.getCurr();
+    if (!captured->relocations.Apply(code, bytes, entrypoint)) {
+        code.SetCodePtr(saved);
+        return {};
+    }
+    code.db(bytes.data(), bytes.size());
+    const auto* const end = code.getCurr();
+    for (const auto& link : captured->links) {
+        const IR::LocationDescriptor target{link.descriptor};
+        auto& patches = patch_information[target];
+        const auto existing = GetBasicBlock(target);
+        const auto pointer = existing ? existing->entrypoint : nullptr;
+        code.SetCodePtr(entrypoint + link.offset);
+        switch (link.kind) {
+        case NativeBlockLink::Kind::Jg:
+            patches.jg.push_back(code.getCurr()); EmitPatchJg(target, pointer); break;
+        case NativeBlockLink::Kind::Jz:
+            patches.jz.push_back(code.getCurr()); EmitPatchJz(target, pointer); break;
+        case NativeBlockLink::Kind::Jmp:
+            patches.jmp.push_back(code.getCurr()); EmitPatchJmp(target, pointer); break;
+        case NativeBlockLink::Kind::MovRcx:
+            patches.mov_rcx.push_back(code.getCurr()); EmitPatchMovRcx(pointer); break;
+        }
+    }
+    code.SetCodePtr(end);
+    return PublishBlock(captured->location, captured->end_location, entrypoint, bytes.size());
+}
+
 void A32EmitX64::ClearCache() {
+    produced_native_template.reset();
     EmitX64::ClearCache();
     block_ranges.ClearCache();
     blocks_by_entrypoint.clear();
@@ -1565,6 +1653,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
     code.mov(qword[r15 + index_reg * sizeof(u64) + offsetof(A32JitState, rsb_location_descriptors)],
              loc_desc_reg);
 
+    RecordNativeLink(NativeBlockLink::Kind::MovRcx, target);
     patch_information[target].mov_rcx.push_back(code.getCurr());
     if (const auto target_block = GetBasicBlock(target)) {
         EmitPatchMovRcx(target_block->entrypoint);
@@ -1619,6 +1708,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
 }
 
 void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    RecordNativeLink(NativeBlockLink::Kind::Jg, target_desc);
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.jg(target_code_ptr ? target_code_ptr
@@ -1633,6 +1723,7 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr 
 }
 
 void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    RecordNativeLink(NativeBlockLink::Kind::Jz, target_desc);
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.jz(target_code_ptr ? target_code_ptr
@@ -1647,6 +1738,7 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr 
 }
 
 void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    RecordNativeLink(NativeBlockLink::Kind::Jmp, target_desc);
     const CodePtr patch_location = code.getCurr();
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.jmp(target_code_ptr ? target_code_ptr
