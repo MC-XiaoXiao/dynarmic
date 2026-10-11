@@ -26,6 +26,10 @@
 #    endif
 #    include <sys/mman.h>
 #    include <sys/types.h>
+#    if defined(__linux__)
+#        include <linux/memfd.h>
+#        include <sys/syscall.h>
+#    endif
 #    include <unistd.h>
 #endif
 
@@ -58,6 +62,10 @@ public:
         if (fd < 0)
             throw std::bad_alloc{};
         shm_unlink(tmpl);
+#    elif defined(__linux__)
+        fd = static_cast<int>(syscall(SYS_memfd_create, "oaknut_dual_code_block", MFD_CLOEXEC));
+        if (fd < 0)
+            throw std::bad_alloc{};
 #    else
         fd = memfd_create("oaknut_dual_code_block", 0);
         if (fd < 0)
@@ -65,14 +73,22 @@ public:
 #    endif
 
         int ret = ftruncate(fd, size);
-        if (ret != 0)
+        if (ret != 0) {
+            close(fd);
             throw std::bad_alloc{};
+        }
 
         m_wmem = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        m_xmem = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
-
-        if (m_wmem == MAP_FAILED || m_xmem == MAP_FAILED)
+        if (m_wmem == MAP_FAILED) {
+            close(fd);
             throw std::bad_alloc{};
+        }
+        m_xmem = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+        if (m_xmem == MAP_FAILED) {
+            munmap(m_wmem, size);
+            close(fd);
+            throw std::bad_alloc{};
+        }
 #endif
     }
 
