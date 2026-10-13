@@ -126,7 +126,7 @@ std::uint32_t encode(AddrOffset<size, align> v)
                                   return encode_fn(Policy::offset(), *label->m_offset);
                               }
 
-                              label->m_wbs.emplace_back(Label::Writeback{Policy::offset(), ~splat, static_cast<Label::EmitFunctionType>(encode_fn)});
+                              label->add_writeback(Label::Writeback{Policy::offset(), ~splat, static_cast<Label::EmitFunctionType>(encode_fn)});
                               return 0u;
                           },
                           [&](const void* p) -> std::uint32_t {
@@ -152,7 +152,7 @@ std::uint32_t encode(PageOffset<size, shift_amount> v)
                                   return encode_fn(Policy::offset(), *label->m_offset);
                               }
 
-                              label->m_wbs.emplace_back(Label::Writeback{Policy::offset(), ~splat, static_cast<Label::EmitFunctionType>(encode_fn)});
+                              label->add_writeback(Label::Writeback{Policy::offset(), ~splat, static_cast<Label::EmitFunctionType>(encode_fn)});
                               return 0u;
                           },
                           [&](const void* p) -> std::uint32_t {

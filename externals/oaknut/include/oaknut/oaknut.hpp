@@ -6,6 +6,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <tuple>
 #include <type_traits>
@@ -27,6 +28,12 @@ namespace oaknut {
 struct Label {
 public:
     Label() = default;
+
+    // The resource must outlive this label. Default labels retain their
+    // ordinary allocator, without consulting a process-wide PMR default.
+    explicit Label(std::pmr::memory_resource& resource)
+        : m_wbs(std::in_place_index<1>, &resource)
+    {}
 
     bool is_bound() const
     {
@@ -55,7 +62,12 @@ private:
     };
 
     std::optional<std::ptrdiff_t> m_offset;
-    std::vector<Writeback> m_wbs;
+    void add_writeback(Writeback writeback)
+    {
+        std::visit([&](auto& pending) { pending.push_back(writeback); }, m_wbs);
+    }
+
+    std::variant<std::vector<Writeback>, std::pmr::vector<Writeback>> m_wbs;
 };
 
 template<typename Policy>
@@ -77,11 +89,13 @@ public:
 
         const auto target_offset = Policy::offset();
         label.m_offset = target_offset;
-        for (auto& wb : label.m_wbs) {
-            const std::uint32_t value = wb.m_fn(wb.m_wb_offset, target_offset);
-            Policy::set_at_offset(wb.m_wb_offset, value, wb.m_mask);
-        }
-        label.m_wbs.clear();
+        std::visit([&](auto& pending) {
+            for (auto& wb : pending) {
+                const std::uint32_t value = wb.m_fn(wb.m_wb_offset, target_offset);
+                Policy::set_at_offset(wb.m_wb_offset, value, wb.m_mask);
+            }
+            pending.clear();
+        }, label.m_wbs);
     }
 
 #include "oaknut/impl/mnemonics_fpsimd_v8.0.inc.hpp"
