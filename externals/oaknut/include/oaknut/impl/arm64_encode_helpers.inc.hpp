@@ -4,6 +4,10 @@
 template<std::uint32_t mask_>
 static constexpr std::uint32_t pdep(std::uint32_t val)
 {
+    // A contiguous field, including an empty mask, needs no per-bit loop.
+    constexpr std::uint32_t lowest = mask_ & (0U - mask_);
+    if constexpr ((mask_ & (mask_ + lowest)) == 0)
+        return (val * lowest) & mask_;
     std::uint32_t mask = mask_;
     std::uint32_t res = 0;
     for (std::uint32_t bb = 1; mask; bb += bb) {
