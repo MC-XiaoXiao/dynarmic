@@ -64,9 +64,15 @@ private:
     std::optional<std::ptrdiff_t> m_offset;
     void add_writeback(Writeback writeback)
     {
-        std::visit([&](auto& pending) { pending.push_back(writeback); }, m_wbs);
+        if (m_first.m_fn == nullptr)
+            m_first = writeback;
+        else
+            std::visit([&](auto& pending) { pending.push_back(writeback); }, m_wbs);
     }
 
+    // Most forward labels have one reference. Keep that fixup in the label;
+    // additional references retain the selected ordinary or PMR allocator.
+    Writeback m_first{};
     std::variant<std::vector<Writeback>, std::pmr::vector<Writeback>> m_wbs;
 };
 
@@ -89,11 +95,17 @@ public:
 
         const auto target_offset = Policy::offset();
         label.m_offset = target_offset;
+        const auto apply = [&](const Label::Writeback& wb) {
+            const std::uint32_t value = wb.m_fn(wb.m_wb_offset, target_offset);
+            Policy::set_at_offset(wb.m_wb_offset, value, wb.m_mask);
+        };
+        if (label.m_first.m_fn != nullptr) {
+            apply(label.m_first);
+            label.m_first.m_fn = nullptr;
+        }
         std::visit([&](auto& pending) {
-            for (auto& wb : pending) {
-                const std::uint32_t value = wb.m_fn(wb.m_wb_offset, target_offset);
-                Policy::set_at_offset(wb.m_wb_offset, value, wb.m_mask);
-            }
+            for (const auto& wb : pending)
+                apply(wb);
             pending.clear();
         }, label.m_wbs);
     }
