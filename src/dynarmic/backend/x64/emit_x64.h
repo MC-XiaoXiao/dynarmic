@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include <mcl/bitsizeof.hpp>
@@ -153,7 +154,9 @@ protected:
     BlockOfCode& code;
     ExceptionHandler exception_handler;
     tsl::robin_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
-    tsl::robin_map<IR::LocationDescriptor, PatchInformation> patch_information;
+    // Patch records contain four vectors. Keep them in stable nodes so spare
+    // hash buckets and table growth do not duplicate these wide records.
+    std::unordered_map<IR::LocationDescriptor, PatchInformation> patch_information;
 };
 
 }  // namespace Dynarmic::Backend::X64

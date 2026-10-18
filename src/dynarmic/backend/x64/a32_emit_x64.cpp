@@ -419,8 +419,8 @@ void A32EmitX64::ForgetPatchLocations(std::vector<RetiredRange> ranges) {
     };
     std::vector<IR::LocationDescriptor> empty_targets;
     for (auto entry = patch_information.begin(); entry != patch_information.end(); ++entry) {
-        auto& patches = entry.value();
-        const auto& target = entry.key();
+        auto& patches = entry->second;
+        const auto& target = entry->first;
         std::erase_if(patches.jg, retired);
         std::erase_if(patches.jz, retired);
         std::erase_if(patches.jmp, retired);
