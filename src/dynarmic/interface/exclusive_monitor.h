@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <dynarmic/common/spin_lock.h>
@@ -91,12 +92,26 @@ public:
     void ClearProcessor(size_t processor_id);
 
 private:
+    using ReservationIndex = std::unordered_map<VAddr, size_t>;
+
     static constexpr size_t INVALID_PROCESSOR_ID =
         std::numeric_limits<size_t>::max();
 
     void AddReservation(size_t processor_id, VAddr address) {
-        const auto [it, inserted] =
-            reservation_heads.try_emplace(address, processor_id);
+        const auto [it, inserted] = [&] {
+            if (reservation_spares.empty()) {
+                return reservation_heads.try_emplace(address, processor_id);
+            }
+            auto node = std::move(reservation_spares.back());
+            reservation_spares.pop_back();
+            node.key() = address;
+            node.mapped() = processor_id;
+            auto result = reservation_heads.insert(std::move(node));
+            if (!result.inserted) {
+                reservation_spares.push_back(std::move(result.node));
+            }
+            return std::pair{result.position, result.inserted};
+        }();
         reservation_previous[processor_id] = INVALID_PROCESSOR_ID;
         if (inserted) {
             reservation_next[processor_id] = INVALID_PROCESSOR_ID;
@@ -119,7 +134,7 @@ private:
             const auto it = reservation_heads.find(address);
             if (it != reservation_heads.end()) {
                 if (next == INVALID_PROCESSOR_ID) {
-                    reservation_heads.erase(it);
+                    RecycleReservation(it);
                 } else {
                     it->second = next;
                 }
@@ -132,6 +147,24 @@ private:
         }
         reservation_previous[processor_id] = INVALID_PROCESSOR_ID;
         reservation_next[processor_id] = INVALID_PROCESSOR_ID;
+    }
+
+    // Nodes belong to this monitor's index and are moved only under its lock.
+    // Keep the cache bounded even in legacy inline-update mode, where the
+    // address index can contain entries no longer reflected in the array.
+    void RecycleReservation(ReservationIndex::const_iterator it) {
+        if (reservation_spares.size() < exclusive_addresses.size()) {
+            reservation_spares.push_back(reservation_heads.extract(it));
+        } else {
+            reservation_heads.erase(it);
+        }
+    }
+
+    void RecycleReservations() {
+        for (auto it = reservation_heads.begin(); it != reservation_heads.end();) {
+            const auto current = it++;
+            RecycleReservation(current);
+        }
     }
 
     bool CheckAndClear(size_t processor_id, VAddr address);
@@ -163,7 +196,8 @@ private:
     std::vector<Vector> exclusive_values;
     std::vector<size_t> reservation_previous;
     std::vector<size_t> reservation_next;
-    std::unordered_map<VAddr, size_t> reservation_heads;
+    ReservationIndex reservation_heads;
+    std::vector<ReservationIndex::node_type> reservation_spares;
 };
 
 }  // namespace Dynarmic

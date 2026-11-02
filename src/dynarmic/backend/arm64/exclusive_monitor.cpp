@@ -15,7 +15,9 @@ ExclusiveMonitor::ExclusiveMonitor(size_t processor_count)
         : exclusive_addresses(processor_count, INVALID_EXCLUSIVE_ADDRESS),
           exclusive_values(processor_count),
           reservation_previous(processor_count, INVALID_PROCESSOR_ID),
-          reservation_next(processor_count, INVALID_PROCESSOR_ID) {}
+          reservation_next(processor_count, INVALID_PROCESSOR_ID) {
+    reservation_spares.reserve(processor_count);
+}
 
 size_t ExclusiveMonitor::GetProcessorCount() const {
     return exclusive_addresses.size();
@@ -64,7 +66,7 @@ bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
         reservation_next[current] = INVALID_PROCESSOR_ID;
         current = next;
     }
-    reservation_heads.erase(it);
+    RecycleReservation(it);
     return true;
 }
 
@@ -73,7 +75,7 @@ void ExclusiveMonitor::Clear() {
     std::fill(exclusive_addresses.begin(), exclusive_addresses.end(), INVALID_EXCLUSIVE_ADDRESS);
     std::fill(reservation_previous.begin(), reservation_previous.end(), INVALID_PROCESSOR_ID);
     std::fill(reservation_next.begin(), reservation_next.end(), INVALID_PROCESSOR_ID);
-    reservation_heads.clear();
+    RecycleReservations();
     Unlock();
 }
 
