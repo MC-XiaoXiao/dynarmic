@@ -444,6 +444,18 @@ A32EmitX64::CacheStats A32EmitX64::GetCacheStats() const noexcept {
     };
 }
 
+A32::NativeCodeSlab::CodeRangeSnapshot A32EmitX64::GetCodeRanges(size_t maximum_ranges) const {
+    A32::NativeCodeSlab::CodeRangeSnapshot result;
+    result.total_ranges = block_descriptors.size();
+    result.ranges.reserve(std::min(maximum_ranges, result.total_ranges));
+    for (const auto& [location, block] : block_descriptors) {
+        if (result.ranges.size() == maximum_ranges)
+            break;
+        result.ranges.push_back({location.Value(), reinterpret_cast<std::uintptr_t>(block.entrypoint), block.size});
+    }
+    return result;
+}
+
 void A32EmitX64::EmitInstructionFetch(A32EmitContext& ctx) {
     if (!conf.instruction_page_table)
         return;

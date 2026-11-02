@@ -80,6 +80,7 @@ public:
         const IR::LocationDescriptor& location, const void* entrypoint);
 
     [[nodiscard]] CacheStats GetCacheStats() const noexcept;
+    [[nodiscard]] A32::NativeCodeSlab::CodeRangeSnapshot GetCodeRanges(size_t maximum_ranges) const;
 
     // The dispatch table is mutable executor state. Keep its representation
     // public so a Jit implementation can own it independently of generated

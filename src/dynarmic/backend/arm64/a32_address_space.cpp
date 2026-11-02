@@ -5,6 +5,7 @@
 
 #include "dynarmic/backend/arm64/a32_address_space.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <utility>
@@ -726,6 +727,33 @@ void A32AddressSpace::RegisterNewBasicBlock(const IR::Block& block, const Emitte
 A32::NativeCodeSlab::CacheStats A32AddressSpace::SharedCacheStats() const {
     const auto stats = block_ranges.GetStats();
     return {stats.range_count, stats.descriptor_count, stats.invalidated_descriptors};
+}
+
+A32::NativeCodeSlab::CodeRangeSnapshot A32AddressSpace::GetCodeRanges(size_t maximum_ranges) const {
+    A32::NativeCodeSlab::CodeRangeSnapshot result;
+    result.retains_invalidated = true;
+    result.storage_generation = GetCodeCacheGeneration();
+    result.total_ranges = block_infos.size() + entries.size() + 1;
+    result.ranges.reserve(std::min(maximum_ranges, result.total_ranges));
+    if (maximum_ranges == 0)
+        return result;
+    result.ranges.push_back({0, reinterpret_cast<std::uintptr_t>(mem.ptr()),
+        static_cast<size_t>(prelude_info.end_of_prelude), A32::NativeCodeSlab::CodeRangeKind::Runtime});
+    auto descriptor = reverse_block_entries.begin();
+    for (const auto& [entrypoint, info] : block_infos) {
+        if (result.ranges.size() == maximum_ranges)
+            break;
+        ASSERT(descriptor != reverse_block_entries.end() && descriptor->first == entrypoint);
+        result.ranges.push_back({descriptor->second.Value(), reinterpret_cast<std::uintptr_t>(entrypoint), info.size});
+        ++descriptor;
+    }
+    for (const auto& [location, entry] : entries) {
+        if (result.ranges.size() == maximum_ranges)
+            break;
+        result.ranges.push_back({location.Value(), reinterpret_cast<std::uintptr_t>(entry.trampoline),
+            sizeof(u32), A32::NativeCodeSlab::CodeRangeKind::EntryTrampoline});
+    }
+    return result;
 }
 
 }  // namespace Dynarmic::Backend::Arm64

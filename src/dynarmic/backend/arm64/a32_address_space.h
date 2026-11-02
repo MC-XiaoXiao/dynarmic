@@ -50,6 +50,7 @@ public:
         ProtectCodeMemory();
     }
     A32::NativeCodeSlab::CacheStats SharedCacheStats() const;
+    A32::NativeCodeSlab::CodeRangeSnapshot GetCodeRanges(size_t maximum_ranges) const;
 
     void* FastDispatchTableStorage() const {
         return fast_dispatch_cache ? fast_dispatch_cache->Data() : nullptr;

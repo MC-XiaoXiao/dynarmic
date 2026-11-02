@@ -59,6 +59,27 @@ public:
         bool baseline{};
     };
 
+    enum class CodeRangeKind : std::uint8_t { Block, EntryTrampoline, Runtime };
+
+    struct CodeRange {
+        std::uint64_t location_descriptor{};
+        std::uintptr_t entrypoint{};
+        std::size_t size{};
+        CodeRangeKind kind{CodeRangeKind::Block};
+    };
+
+    struct CodeRangeSnapshot {
+        bool initialized{};
+        bool pending_invalidation{};
+        bool retains_invalidated{};
+        std::uint64_t generation{};
+        std::uint64_t storage_generation{};
+        std::uint64_t segment_recycles{};
+        std::uint64_t full_generation_clears{};
+        std::size_t total_ranges{};
+        std::vector<CodeRange> ranges;
+    };
+
     NativeCodeSlab();
     ~NativeCodeSlab();
 
@@ -110,6 +131,11 @@ public:
     [[nodiscard]] const void* return_from_run_code() const;
     [[nodiscard]] std::size_t code_cache_used() const;
     [[nodiscard]] CacheStats GetCacheStats() const;
+    // Copy bounded diagnostic metadata under the publication lock. This does
+    // not emit code, apply pending invalidation, touch LRU state or create an
+    // emitter. Compare generations around a sampling window before attributing
+    // reused native addresses. A zero limit returns only the validity stamps.
+    [[nodiscard]] CodeRangeSnapshot GetCodeRanges(std::size_t maximum_ranges) const;
     void dump_disassembly() const;
     [[nodiscard]] std::vector<std::string> disassemble() const;
     [[nodiscard]] bool has_host_feature_sha() const;

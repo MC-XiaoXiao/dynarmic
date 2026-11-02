@@ -101,6 +101,10 @@ NativeCodeSlab::CacheStats NativeCodeSlab::GetCacheStats() const {
     return impl->GetCacheStats();
 }
 
+NativeCodeSlab::CodeRangeSnapshot NativeCodeSlab::GetCodeRanges(std::size_t maximum_ranges) const {
+    return impl->GetCodeRanges(maximum_ranges);
+}
+
 void NativeCodeSlab::dump_disassembly() const {
     impl->dump_disassembly();
 }

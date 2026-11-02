@@ -223,6 +223,16 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         stats.full_generation_clears = full_generation_clears;
         return stats;
     }
+    CodeRangeSnapshot GetCodeRanges(size_t maximum_ranges) const {
+        std::lock_guard lock{mutex};
+        auto result = emitter ? emitter->GetCodeRanges(maximum_ranges) : CodeRangeSnapshot{};
+        result.initialized = initialized;
+        result.pending_invalidation = clear_pending || !pending_ranges.empty();
+        result.generation = current_generation;
+        result.segment_recycles = segment_recycles;
+        result.full_generation_clears = full_generation_clears;
+        return result;
+    }
     void dump_disassembly() const {
         std::lock_guard lock{mutex};
         if (emitter) emitter->DumpDisassembly();
