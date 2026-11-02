@@ -369,11 +369,15 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
         jng(return_to_caller, T_NEAR);
     }
+    // Demand lookup may translate and allocate using host floating point.
+    // Keep its exception flags and rounding separate from the guest state.
+    SwitchMxcsrOnExit();
     cb.LookupBlock->EmitCall(*this);
     // A translation/lookup callback can halt execution after the dispatcher's
     // entry check. Preserve the target PC and return before running the block.
     cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
-    jne(return_to_caller, T_NEAR);
+    jne(return_to_caller_mxcsr_already_exited, T_NEAR);
+    SwitchMxcsrOnEntry();
     jmp(ABI_RETURN);
 
     align();
@@ -385,10 +389,10 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
         jng(return_to_caller_mxcsr_already_exited, T_NEAR);
     }
-    SwitchMxcsrOnEntry();
     cb.LookupBlock->EmitCall(*this);
     cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
-    jne(return_to_caller, T_NEAR);
+    jne(return_to_caller_mxcsr_already_exited, T_NEAR);
+    SwitchMxcsrOnEntry();
     jmp(ABI_RETURN);
 
     align();
@@ -454,7 +458,9 @@ void BlockOfCode::UpdateTicks() {
 }
 
 void BlockOfCode::LookupBlock() {
+    SwitchMxcsrOnExit();
     cb.LookupBlock->EmitCall(*this);
+    SwitchMxcsrOnEntry();
 }
 
 void BlockOfCode::LoadRequiredFlagsForCondFromRax(IR::Cond cond) {

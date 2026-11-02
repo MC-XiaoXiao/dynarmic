@@ -26,6 +26,8 @@ IR::Block TranslateArm(LocationDescriptor descriptor, TranslateCallbacks* tcb, c
     TranslatorVisitor visitor{block, descriptor, options};
 
     bool should_continue = true;
+    std::size_t instruction_count = 0;
+    bool bounded = false;
     do {
         const u32 arm_pc = visitor.ir.current_location.PC();
         u64 ticks_for_instruction = 1;
@@ -62,11 +64,13 @@ IR::Block TranslateArm(LocationDescriptor descriptor, TranslateCallbacks* tcb, c
 
         visitor.ir.current_location = visitor.ir.current_location.AdvancePC(4);
         block.CycleCount() += ticks_for_instruction;
-    } while (should_continue && CondCanContinue(visitor.cond_state, visitor.ir) && !single_step);
+        bounded = options.maximum_instructions != 0 &&
+            ++instruction_count >= options.maximum_instructions;
+    } while (should_continue && CondCanContinue(visitor.cond_state, visitor.ir) && !single_step && !bounded);
 
-    if (visitor.cond_state == ConditionalState::Translating || visitor.cond_state == ConditionalState::Trailing || single_step) {
+    if (visitor.cond_state == ConditionalState::Translating || visitor.cond_state == ConditionalState::Trailing || single_step || bounded) {
         if (should_continue) {
-            if (single_step) {
+            if (single_step || bounded) {
                 visitor.ir.SetTerm(IR::Term::LinkBlock{visitor.ir.current_location});
             } else {
                 visitor.ir.SetTerm(IR::Term::LinkBlockFast{visitor.ir.current_location});

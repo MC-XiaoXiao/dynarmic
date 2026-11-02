@@ -138,6 +138,21 @@ LinkTarget ExclusiveWriteMemoryLinkTarget(size_t bitsize) {
     UNREACHABLE();
 }
 
+// AAPCS64 leaves the upper bits of narrow integer return values unspecified.
+// All memory callback paths must produce the zero-extended IR value, including
+// wrapped slow paths where a different operand may have used an inline load.
+template<size_t bitsize>
+void EmitMemoryCallbackResult(oaknut::CodeGenerator& code, oaknut::XReg destination, oaknut::XReg source) {
+    static_assert(bitsize <= 64);
+    if constexpr (bitsize < 32) {
+        code.UBFX(destination.toW(), source.toW(), 0, bitsize);
+    } else if constexpr (bitsize == 32) {
+        code.MOV(destination.toW(), source.toW());
+    } else {
+        code.MOV(destination, source);
+    }
+}
+
 template<size_t bitsize>
 void CallbackOnlyEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
@@ -153,6 +168,7 @@ void CallbackOnlyEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, I
         code.MOV(Q8.B16(), Q0.B16());
         ctx.reg_alloc.DefineAsRegister(inst, Q8);
     } else {
+        EmitMemoryCallbackResult<bitsize>(code, X0, X0);
         ctx.reg_alloc.DefineAsRegister(inst, X0);
     }
 }
@@ -174,6 +190,7 @@ void CallbackOnlyEmitExclusiveReadMemory(oaknut::CodeGenerator& code, EmitContex
         code.MOV(Q8.B16(), Q0.B16());
         ctx.reg_alloc.DefineAsRegister(inst, Q8);
     } else {
+        EmitMemoryCallbackResult<bitsize>(code, X0, X0);
         ctx.reg_alloc.DefineAsRegister(inst, X0);
     }
 }
@@ -198,6 +215,7 @@ void CallbackOnlyEmitSwapMemory(oaknut::CodeGenerator& code, EmitContext& ctx, I
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     ctx.reg_alloc.PrepareForCall({}, args[1], args[2]);
     EmitRelocation(code, ctx, SwapMemoryLinkTarget(bitsize));
+    EmitMemoryCallbackResult<bitsize>(code, X0, X0);
     ctx.reg_alloc.DefineAsRegister(inst, X0);
 }
 
@@ -471,7 +489,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         if constexpr (bitsize == 128) {
             code.MOV(Rvalue.B16(), Q0.B16());
         } else {
-            code.MOV(Rvalue.toX(), Xscratch0);
+            EmitMemoryCallbackResult<bitsize>(code, Rvalue.toX(), Xscratch0);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
@@ -603,7 +621,7 @@ void FastmemEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::In
         if constexpr (bitsize == 128) {
             code.MOV(Rvalue.B16(), Q0.B16());
         } else {
-            code.MOV(Rvalue.toX(), Xscratch0);
+            EmitMemoryCallbackResult<bitsize>(code, Rvalue.toX(), Xscratch0);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);

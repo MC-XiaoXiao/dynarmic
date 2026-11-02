@@ -56,6 +56,7 @@ public:
         std::uint64_t generation{};
         bool newly_emitted{};
         std::shared_ptr<const NativeCodeTemplate> native_template;
+        bool baseline{};
     };
 
     NativeCodeSlab();
@@ -73,6 +74,7 @@ public:
     // requested invalidation until that transition is safe to publish, but it
     // never waits for an active executor.
     [[nodiscard]] std::uint64_t generation_snapshot() const noexcept;
+    [[nodiscard]] std::uint64_t compilation_revision() const noexcept;
     [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
                                   std::uint64_t expected_generation,
                                   BlockDescriptor& result) const;
@@ -82,9 +84,10 @@ public:
     // must not ask a retired executor's coprocessor to compile an operation.
     [[nodiscard]] BlockDescriptor emit(IR::Block& block,
                                        std::uint64_t expected_generation,
-                                       const UserConfig& runtime_config);
+                                       const UserConfig& runtime_config, std::uint64_t expected_revision = 0);
     [[nodiscard]] BlockDescriptor import_template(const NativeCodeTemplate& native_template,
-        std::uint64_t expected_generation, const UserConfig& runtime_config);
+        std::uint64_t expected_generation, const UserConfig& runtime_config,
+        std::uint64_t expected_revision = 0);
     [[nodiscard]] std::size_t space_remaining() const;
     void ensure_memory_committed(std::size_t codesize);
     void register_executor(void* storage, void* jit_state);
@@ -181,6 +184,9 @@ public:
      * Compiles a previously observed A32 location descriptor without
      * executing it. The caller must guarantee that execution is stopped.
      */
+    bool OptimizeBlock(std::uint64_t location_descriptor);
+    PortableIREmitOutcome EmitPreparedBlock(IR::Block block,
+        std::uint64_t generation, std::uint64_t revision, bool baseline = true);
     bool Precompile(std::uint64_t location_descriptor);
 
     /**

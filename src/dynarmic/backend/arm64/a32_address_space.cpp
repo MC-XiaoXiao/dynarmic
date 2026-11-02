@@ -223,12 +223,16 @@ static void EmitMemoryBases(oaknut::CodeGenerator& code, const A32::UserConfig& 
     }
 }
 
-A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*), void* lookup_arg)
+A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*), void* lookup_arg, bool template_only)
         : AddressSpace(conf.code_cache_size)
         , conf(conf)
         , shared_lookup(lookup)
         , shared_lookup_arg(lookup_arg) {
     defer_block_linking = lookup != nullptr;
+    if (template_only) {
+        prelude_info.end_of_prelude = 0;
+        return;
+    }
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         fast_dispatch_cache = std::make_unique<FastDispatchCache>();
     }
@@ -337,6 +341,7 @@ tsl::robin_set<IR::LocationDescriptor> A32AddressSpace::InvalidateCacheRanges(co
 
 void A32AddressSpace::ClearCache() {
     AddressSpace::ClearCache();
+    entries.clear();
     block_ranges.ClearCache();
 }
 
@@ -524,6 +529,20 @@ void A32AddressSpace::EmitPrelude() {
             code.BL(prelude_info.add_ticks);
         }
 
+        if (conf.enable_cycle_counting && conf.enable_cycle_budget_replenishment) {
+            oaknut::Label finish;
+            code.LDAR(Wscratch0, Xhalt);
+            code.CBNZ(Wscratch0, finish);
+            code.BL(prelude_info.get_ticks_remaining);
+            code.CBZ(X0, finish);
+            code.MOV(Xticks, X0);
+            code.STR(Xticks, SP, offsetof(StackLayout, cycles_to_run));
+            // The dispatcher checks asynchronous halts again before entry.
+            // Keep the ABI frame, Guest FPCR and RSB across clock probes.
+            code.B(prelude_info.return_to_dispatcher);
+            code.l(finish);
+        }
+
         code.LDR(Wscratch0, SP, offsetof(StackLayout, save_host_fpcr));
         code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
 
@@ -553,7 +572,49 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::EmitShared(IR::Block& bloc
     emitted_template.reset();
     SCOPE_EXIT { emission_source = nullptr; emitted_template.reset(); };
     const auto& emitted = Emit(block);
-    return {emitted.entry_point, emitted.size, 0, false, std::move(emitted_template)};
+    return {Get(block.Location()), emitted.size, 0, false, std::move(emitted_template)};
+}
+
+std::shared_ptr<const A32::NativeCodeTemplate> A32AddressSpace::BuildTemplate(IR::Block& block, const A32::UserConfig& source) {
+    // Pointer-bearing coprocessor/host-call blocks retain ordinary emission.
+    if (std::any_of(block.begin(), block.end(), [](const IR::Inst& inst) {
+            return inst.IsCoprocessorInstruction() || inst.GetOpcode() == IR::Opcode::CallHostFunction;
+        }))
+        return {};
+    code.set_offset(0);
+    emission_source = &source;
+    SCOPE_EXIT { emission_source = nullptr; };
+    UnprotectCodeMemory();
+    auto info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
+    if (!A32NativeCodeTemplate::Eligible(source, block, info))
+        return {};
+    return std::make_shared<const A32NativeCodeTemplate>(source, block, info);
+}
+
+CodePtr A32AddressSpace::PublishEntry(IR::LocationDescriptor location, CodePtr body) {
+    if (!conf.tiered_compilation || A32::LocationDescriptor{location}.SingleStepping())
+        return body;
+    auto& entry = entries[location];
+    if (!entry.trampoline) {
+        entry.trampoline = code.xptr<CodePtr>();
+        code.B(static_cast<const void*>(body));
+    }
+    return entry.trampoline;
+}
+
+void A32AddressSpace::FinishEntryPublication(IR::LocationDescriptor location, CodePtr body) {
+    const auto entry = entries.find(location);
+    if (entry == entries.end())
+        return;
+    // Native bytes and relocations are synchronized before the release store.
+    // Old bodies stay allocated until the existing quiescent cache retirement.
+    entry.value().baseline = emission_source && emission_source->fast_compilation;
+    PublishBranch(entry->second.trampoline, body);
+}
+
+bool A32AddressSpace::IsBaseline(IR::LocationDescriptor location) const {
+    const auto entry = entries.find(location);
+    return entry != entries.end() && entry->second.baseline;
 }
 
 void A32AddressSpace::CaptureEmittedBlock(const IR::Block& block, EmittedBlockInfo& info) {
@@ -574,6 +635,8 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     if (!native_template || !native_template->Compatible(source) ||
         native_template->configuration != NativeTemplateConfiguration(conf))
         return {};
+    emission_source = &source;
+    SCOPE_EXIT { emission_source = nullptr; };
     EnsureEmissionSpace();
     if (native_template->CodeSize() > GetRemainingSize())
         return {};
@@ -590,7 +653,7 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     const A32::LocationDescriptor start{native_template->location};
     const A32::LocationDescriptor end{native_template->end_location};
     block_ranges.AddRange(boost::icl::discrete_interval<u32>::closed(start.PC(), end.PC() - 1), start);
-    return {emitted.entry_point, emitted.size, 0, false, {}};
+    return {Get(native_template->location), emitted.size, 0, false, {}};
 }
 
 EmitConfig A32AddressSpace::GetEmitConfig() {

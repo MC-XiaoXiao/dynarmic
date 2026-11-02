@@ -7,7 +7,6 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <cstdio>
 
 #include <mcl/bit_cast.hpp>
 
@@ -72,7 +71,7 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
     EnsureEmissionSpace();
     const auto translation_started = std::chrono::steady_clock::now();
     IR::Block ir_block = GenerateIR(descriptor);
-    const EmittedBlockInfo block_info = Emit(ir_block);
+    const EmittedBlockInfo& block_info = Emit(ir_block);
     const auto translation_nanoseconds = static_cast<u64>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - translation_started).count());
@@ -156,13 +155,12 @@ void AddressSpace::EnsureEmissionSpace() {
     }
 }
 
-EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
+const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
     EnsureEmissionSpace();
 
     UnprotectCodeMemory();
 
     EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
-
     CaptureEmittedBlock(block, block_info);
     const auto& cached_info = PublishBlock(block.Location(), std::move(block_info));
     RegisterNewBasicBlock(block, cached_info);
@@ -171,24 +169,32 @@ EmittedBlockInfo AddressSpace::Emit(IR::Block& block) {
 
 const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                                   std::span<const Relocation> fixed_relocations) {
-    ASSERT(block_entries.insert({location, block_info.entry_point}).second);
+    block_entries.insert_or_assign(location, PublishEntry(location, block_info.entry_point));
     ASSERT(reverse_block_entries.empty() ||
            std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
     reverse_block_entries.emplace_hint(reverse_block_entries.end(),
                                       block_info.entry_point, location);
-    ASSERT(block_infos.insert({block_info.entry_point, block_info}).second);
-
     Link(block_info, fixed_relocations.empty() ? std::span<const Relocation>{block_info.relocations} : fixed_relocations);
-    if (!defer_block_linking)
-        RelinkForDescriptor(location, block_info.entry_point);
+    // Prelude callback targets are fixed after initial linking. Retain only
+    // block links and fastmem sites, which are needed for later patching.
+    std::vector<Relocation>{}.swap(block_info.relocations);
+    // The cache owns relocation metadata. Move it once instead of copying
+    // its per-block containers into the index and back to the dispatcher.
+    const auto [block_iter, inserted] = block_infos.try_emplace(block_info.entry_point, std::move(block_info));
+    ASSERT(inserted);
+    const EmittedBlockInfo& cached_info = block_iter->second;
 
-    mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point), block_info.size);
+    if (!defer_block_linking)
+        RelinkForDescriptor(location, Get(location));
+
+    mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), cached_info.size);
+    FinishEntryPublication(location, cached_info.entry_point);
     ProtectCodeMemory();
 
-    return block_infos.at(block_info.entry_point);
+    return cached_info;
 }
 
-void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation> fixed_relocations) {
+void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relocation> fixed_relocations) {
     using namespace oaknut;
     using namespace oaknut::util;
 
@@ -328,8 +334,8 @@ void AddressSpace::Link(EmittedBlockInfo& block_info, std::span<const Relocation
         }
     }
 
-    for (auto [target_descriptor, list] : block_info.BlockRelocations()) {
-        block_references.emplace(target_descriptor, block_info.entry_point);
+    for (const auto& [target_descriptor, list] : block_info.BlockRelocations()) {
+        block_references[target_descriptor].push_back(block_info.entry_point);
         LinkBlockLinks(block_info.entry_point, Get(target_descriptor), list);
     }
 }
@@ -387,9 +393,10 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
     // ADRL is a multi-instruction update and still requires quiescence.
     if (!target_ptr)
         return;
-    const auto [first, last] = block_references.equal_range(target_descriptor);
-    for (auto reference = first; reference != last; ++reference) {
-        const auto source = reference->second;
+    const auto references = block_references.find(target_descriptor);
+    if (references == block_references.end())
+        return;
+    for (const auto source : references->second) {
         const auto info = block_infos.find(source);
         if (info == block_infos.end())
             continue;
@@ -399,14 +406,7 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
         for (const auto [offset, type] : relocations->second) {
             if (type != BlockRelocationType::Branch)
                 continue;
-            auto* const patch = reinterpret_cast<u32*>(source + offset);
-            u32 instruction;
-            oaknut::CodeGenerator branch{&instruction, patch};
-            branch.B(static_cast<const void*>(target_ptr));
-            static_assert(std::atomic_ref<u32>::is_always_lock_free);
-            static_assert(std::atomic_ref<u32>::required_alignment <= alignof(u32));
-            std::atomic_ref<u32>{*patch}.store(instruction, std::memory_order_release);
-            mem.invalidate(patch, sizeof(u32));
+            PublishBranch(source + offset, target_ptr);
         }
     }
 #else
@@ -416,10 +416,23 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
 #endif
 }
 
+void AddressSpace::PublishBranch(CodePtr patch, CodePtr target) {
+    u32 instruction;
+    auto* word = reinterpret_cast<u32*>(patch);
+    oaknut::CodeGenerator branch{&instruction, word};
+    branch.B(static_cast<const void*>(target));
+    static_assert(std::atomic_ref<u32>::is_always_lock_free);
+    static_assert(std::atomic_ref<u32>::required_alignment <= alignof(u32));
+    // Reuse AArch64's permitted concurrent B replacement, as for block links.
+    std::atomic_ref<u32>{*word}.store(instruction, std::memory_order_release);
+    mem.invalidate(word, sizeof(u32));
+}
+
 void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {
-    const auto [first, last] = block_references.equal_range(target_descriptor);
-    for (auto reference = first; reference != last; ++reference) {
-        const auto code_ptr = reference->second;
+    const auto references = block_references.find(target_descriptor);
+    if (references == block_references.end())
+        return;
+    for (const auto code_ptr : references->second) {
         if (auto block_iter = block_infos.find(code_ptr); block_iter != block_infos.end()) {
             const EmittedBlockInfo& block_info = block_iter->second;
 

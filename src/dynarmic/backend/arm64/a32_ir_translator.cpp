@@ -7,7 +7,7 @@
 namespace Dynarmic::Backend::Arm64 {
 IR::Block TranslateA32IR(const A32::UserConfig& conf, IR::LocationDescriptor descriptor) {
     auto* const callbacks = GetA32RuntimeCallbacks(conf);
-    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
+    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions, conf.maximum_block_instructions});
 
     Optimization::PolyfillPass(ir_block, {});
     Optimization::NamingPass(ir_block);

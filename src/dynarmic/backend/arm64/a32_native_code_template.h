@@ -21,7 +21,7 @@ inline auto NativeTemplateConfiguration(const A32::UserConfig& conf) {
     const auto* read_link = conf.read_page_table_link ? conf.read_page_table_link :
         (conf.read_page_table == nullptr ? conf.page_table_link : nullptr);
     return std::tuple{conf.arch_version, conf.optimizations, conf.unsafe_optimizations,
-        conf.define_unpredictable_behaviour, conf.hook_hint_instructions,
+        conf.define_unpredictable_behaviour, conf.hook_hint_instructions, conf.tiered_compilation,
         conf.hook_isb, conf.check_halt_on_memory_access, conf.enable_cycle_counting,
         conf.always_little_endian, conf.wall_clock_cntpct, bool(conf.page_table),
         bool(conf.read_page_table),
@@ -47,7 +47,7 @@ class A32NativeCodeTemplate final : public A32::NativeCodeTemplate {
 public:
     A32NativeCodeTemplate(const A32::UserConfig& conf, const IR::Block& block,
                          EmittedBlockInfo& emitted)
-        : configuration{NativeTemplateConfiguration(conf)}, location{block.Location()},
+        : configuration{NativeTemplateConfiguration(conf)}, baseline{conf.fast_compilation}, location{block.Location()},
           end_location{block.EndLocation()}, info{ShareRelocations(emitted)},
           words{reinterpret_cast<const u32*>(emitted.entry_point),
                 reinterpret_cast<const u32*>(emitted.entry_point + emitted.size)} {
@@ -56,6 +56,7 @@ public:
         info.entry_point = nullptr;
     }
 
+    bool IsBaseline() const noexcept override { return baseline; }
     u64 LocationDescriptor() const noexcept override { return location.Value(); }
     size_t CodeSize() const noexcept override { return info.size; }
     size_t MemoryFootprint() const noexcept override {
@@ -104,6 +105,7 @@ private:
 
 public:
     const decltype(NativeTemplateConfiguration(std::declval<A32::UserConfig>())) configuration;
+    const bool baseline;
     const IR::LocationDescriptor location;
     const IR::LocationDescriptor end_location;
     EmittedBlockInfo info;

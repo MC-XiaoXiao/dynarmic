@@ -10,8 +10,8 @@
 #include <memory>
 #include <vector>
 
+#include <boost/container/flat_map.hpp>
 #include <mcl/stdint.hpp>
-#include <tsl/robin_map.h>
 
 #include "dynarmic/backend/arm64/fastmem.h"
 #include "dynarmic/interface/A32/coprocessor.h"
@@ -104,7 +104,9 @@ struct EmittedBlockInfo {
     CodePtr entry_point;
     size_t size;
     std::vector<Relocation> relocations;
-    tsl::robin_map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
+    // Each block has few link targets and fastmem sites. Flat maps avoid
+    // embedding two hash-table control structures in every cached block.
+    boost::container::flat_map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
     using BlockRelocationMap = decltype(block_relocations);
     // Emission builds a local map; imports share immutable metadata while
     // retaining their own independently patched executable bytes.
@@ -112,7 +114,7 @@ struct EmittedBlockInfo {
     const BlockRelocationMap& BlockRelocations() const {
         return shared_block_relocations ? *shared_block_relocations : block_relocations;
     }
-    tsl::robin_map<std::ptrdiff_t, FastmemPatchInfo> fastmem_patch_info;
+    boost::container::flat_map<std::ptrdiff_t, FastmemPatchInfo> fastmem_patch_info;
 };
 
 struct EmitConfig {

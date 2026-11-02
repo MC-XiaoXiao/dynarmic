@@ -15,10 +15,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-#    include <cstdlib>
-#    include <cstring>
-#endif
 
 #include <boost/icl/interval_set.hpp>
 #include <fmt/format.h>
@@ -114,41 +110,6 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
     return conf;
 }
 
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-// Workspace-only fault injection. The hook is read once when a slab is
-// initialized, so it cannot add an environment lookup to the guest hot path.
-// The entire implementation is absent from production builds.
-enum class TestEmitFailure : std::uint8_t {
-    None,
-    Before,
-    After,
-    Commit,
-    Null,
-    Generation,
-};
-
-[[nodiscard]] static TestEmitFailure ReadTestEmitFailure() noexcept {
-    const char* const value = std::getenv("ILEMU_DYNARMIC_TEST_EMIT_FAILURE");
-    if (value == nullptr)
-        return TestEmitFailure::None;
-    if (std::strcmp(value, "before-once") == 0) {
-        return TestEmitFailure::Before;
-    }
-    if (std::strcmp(value, "after-once") == 0) {
-        return TestEmitFailure::After;
-    }
-    if (std::strcmp(value, "commit-once") == 0) {
-        return TestEmitFailure::Commit;
-    }
-    if (std::strcmp(value, "null-once") == 0) {
-        return TestEmitFailure::Null;
-    }
-    if (std::strcmp(value, "generation-once") == 0) {
-        return TestEmitFailure::Generation;
-    }
-    return TestEmitFailure::None;
-}
-#endif
 
 struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState, A32EmitX64::FastDispatchEntry> {
     using BlockDescriptor = NativeCodeSlab::BlockDescriptor;
@@ -342,9 +303,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         conf = std::move(config);
         code_cache_size = conf->code_cache_size;
         shared_mode = shared;
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-        test_emit_failure = ReadTestEmitFailure();
-#endif
         initialized = true;
     }
 
@@ -376,16 +334,10 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     }
 
     [[nodiscard]] BlockDescriptor emit(
-        IR::Block& block, std::uint64_t expected_generation, const UserConfig* = nullptr) {
+        IR::Block& block, std::uint64_t expected_generation, const UserConfig* = nullptr, u64 expected_revision = 0) {
         std::lock_guard lock{mutex};
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-        if (test_emit_failure == TestEmitFailure::Generation && !test_emit_failure_injected) {
-            test_emit_failure_injected = true;
-            request_generation_transition(
-                GenerationTransitionKind::ClearAll, false);
-        }
-#endif
-        if (clear_pending || !pending_ranges.empty() || expected_generation != current_generation) {
+        if (clear_pending || !pending_ranges.empty() || expected_generation != current_generation ||
+            (expected_revision && expected_revision != publication_revision.load(std::memory_order_acquire))) {
             return {};
         }
         if (const auto existing = emitter->GetBasicBlock(block.Location())) {
@@ -396,23 +348,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
                 existing->entrypoint, existing->size, current_generation,
                 false};
         }
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-        if (test_emit_failure == TestEmitFailure::Before && !test_emit_failure_injected) {
-            test_emit_failure_injected = true;
-            throw std::runtime_error{"injected portable emit failure before code"};
-        }
-        if (test_emit_failure == TestEmitFailure::Null && !test_emit_failure_injected) {
-            test_emit_failure_injected = true;
-            return {};
-        }
-#endif
         const auto result = emitter->Emit(block);
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-        if (test_emit_failure == TestEmitFailure::After && !test_emit_failure_injected) {
-            test_emit_failure_injected = true;
-            throw std::runtime_error{"injected portable emit failure after code"};
-        }
-#endif
         if (result.entrypoint != nullptr) {
             publish_direct_link_target(
                 block.Location(), result.entrypoint);
@@ -425,10 +361,11 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     }
 
     [[nodiscard]] BlockDescriptor import_template(const NativeCodeTemplate& native_template,
-        std::uint64_t expected_generation, const UserConfig& source) {
+        std::uint64_t expected_generation, const UserConfig& source, u64 expected_revision = 0) {
         std::lock_guard lock{mutex};
         if (!initialized || !shared_mode || !source.enable_native_code_templates ||
-            clear_pending || !pending_ranges.empty() || expected_generation != current_generation)
+            clear_pending || !pending_ranges.empty() || expected_generation != current_generation ||
+            (expected_revision && expected_revision != publication_revision.load(std::memory_order_acquire)))
             return {};
         const IR::LocationDescriptor location{native_template.LocationDescriptor()};
         if (const auto existing = emitter->GetBasicBlock(location))
@@ -455,12 +392,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
 
     void ensure_memory_committed(std::size_t codesize) {
         std::lock_guard lock{mutex};
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-        if (test_emit_failure == TestEmitFailure::Commit && !test_emit_failure_injected) {
-            test_emit_failure_injected = true;
-            throw std::runtime_error{"injected portable code commit failure"};
-        }
-#endif
         block_of_code->EnsureMemoryCommitted(codesize);
     }
 
@@ -653,10 +584,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     std::uint64_t full_generation_clears{};
     tsl::robin_set<IR::LocationDescriptor> pending_direct_link_targets;
     bool shared_mode{};
-#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-    TestEmitFailure test_emit_failure{TestEmitFailure::None};
-    bool test_emit_failure_injected{};
-#endif
 };
 
 #include "dynarmic/backend/native_code_slab_interface.inc"
@@ -1123,6 +1050,11 @@ private:
             }
         }
 
+        if (jit_interface->is_executing && conf.callbacks->DeferCodeTranslation(descriptor.Value())) {
+            HaltExecution(HaltReason::CodeCacheMiss);
+            return {native_code_slab->return_from_run_code(), 0, generation};
+        }
+
         const auto translation_started = std::chrono::steady_clock::now();
 
         bool portable_completion_called = false;
@@ -1354,6 +1286,11 @@ Jit::GetHostExecutionBudgetResult() const {
     return impl->GetHostExecutionBudgetResult();
 }
 
+bool Jit::OptimizeBlock(std::uint64_t) { return false; }
+Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block, u64, u64, bool) {
+    return PortableIREmitOutcome::EmitFailed;
+}
+
 bool Jit::Precompile(std::uint64_t location_descriptor) {
     return impl->Precompile(location_descriptor);
 }
@@ -1371,8 +1308,8 @@ Jit::NativeCodeImportOutcome Jit::PrecompileNativeCode(const NativeCodeTemplate&
 }
 
 NativeCodeSlab::BlockDescriptor NativeCodeSlab::import_template(
-    const NativeCodeTemplate& native_template, std::uint64_t generation, const UserConfig& conf) {
-    return impl->import_template(native_template, generation, conf);
+    const NativeCodeTemplate& native_template, std::uint64_t generation, const UserConfig& conf, std::uint64_t expected_revision) {
+    return impl->import_template(native_template, generation, conf, expected_revision);
 }
 
 Jit::PortableIREmitOutcome Jit::PrecompileWithResult(IR::Block block) {

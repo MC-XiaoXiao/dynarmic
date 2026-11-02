@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <mcl/stdint.hpp>
 
 #include "dynarmic/interface/A32/arch_version.h"
@@ -29,6 +30,9 @@ struct TranslationOptions {
     /// If this is false, we treat the instruction as a NOP.
     /// If this is true, we emit an ExceptionRaised instruction.
     bool hook_hint_instructions = true;
+
+    // Zero retains natural basic blocks. Limits end at an instruction boundary.
+    std::size_t maximum_instructions = 0;
 };
 
 /**

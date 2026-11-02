@@ -82,6 +82,14 @@ struct UserCallbacks : public TranslateCallbacks {
     // IR code can be emitted by the callee prior to translation of the instruction.
     void PreCodeTranslationHook(bool /*is_thumb*/, VAddr /*pc*/, A32::IREmitter& /*ir*/) override {}
 
+    // On an executing native-cache miss, allow the owner to continue through
+    // another backend while an independent Jit compiles this location.
+    // True exits Run with CodeCacheMiss before retiring the missing block.
+    virtual bool DeferCodeTranslation(std::uint64_t /*location_descriptor*/) noexcept { return false; }
+    // Transfer an already translated cold block to an independent emission
+    // lane. True transfers ownership and exits before any instruction retires.
+    virtual bool DeferCodeEmission(IR::Block&, std::uint64_t, std::uint64_t) { return false; }
+
     // Called only after the backend has emitted host code for the block.
     virtual void CodeTranslationCompleted(
             std::uint64_t /*location_descriptor*/,
@@ -294,6 +302,9 @@ struct UserConfig {
     /// IR verification. State-access cleanup and folding of larger blocks stay
     /// enabled to avoid excessive register allocation and native code growth.
     bool fast_compilation = false;
+    // Compatible runtime ABI with bounded cold code and replaceable entries.
+    bool tiered_compilation = false;
+    std::size_t maximum_block_instructions = 0;
     static constexpr std::size_t fast_compilation_max_unfolded_instructions = 64;
 
     bool HasOptimization(OptimizationFlag f) const {
@@ -392,6 +403,10 @@ struct UserConfig {
     /// This option allows you to disable cycle counting. If this is set to false,
     /// AddTicks and GetTicksRemaining are never called, and no cycle counting is done.
     bool enable_cycle_counting = true;
+
+    // ARM64 clients can supply successive cycle chunks without returning from
+    // Run. AddTicks must retire each chunk; zero remaining or a halt ends Run.
+    bool enable_cycle_budget_replenishment = false;
 
     // Clients that bound execution through the cycle budget can omit the
     // second countdown. Asynchronous halt checks remain enabled.

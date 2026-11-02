@@ -22,6 +22,8 @@
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/constants.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/interface/optimization_flags.h"
+#include "fp_mul.h"
 #include "dynarmic/common/cast_util.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
@@ -617,11 +619,11 @@ void EmitX64::EmitFPMinNumeric64(EmitContext& ctx, IR::Inst* inst) {
 }
 
 void EmitX64::EmitFPMul32(EmitContext& ctx, IR::Inst* inst) {
-    FPThreeOp<32>(code, ctx, inst, &Xbyak::CodeGenerator::mulss);
+    EmitFPMulAccurate<32, false>(code, ctx, inst);
 }
 
 void EmitX64::EmitFPMul64(EmitContext& ctx, IR::Inst* inst) {
-    FPThreeOp<64>(code, ctx, inst, &Xbyak::CodeGenerator::mulsd);
+    EmitFPMulAccurate<64, false>(code, ctx, inst);
 }
 
 template<size_t fsize, bool negate_product>

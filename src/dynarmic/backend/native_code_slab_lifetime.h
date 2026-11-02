@@ -51,6 +51,7 @@ public:
     std::size_t active_executions{};
     std::uint64_t current_generation{1};
     std::atomic<std::uint64_t> published_generation{1};
+    std::atomic<std::uint64_t> publication_revision{1};
     std::uint64_t pending_generation{1};
     boost::icl::interval_set<u32> pending_ranges;
     bool initialized{};
@@ -108,6 +109,7 @@ public:
 
     void request_generation_transition(GenerationTransitionKind kind,
                                        bool finish = true) {
+        publication_revision.fetch_add(1, std::memory_order_release);
         if (!clear_pending) {
             clear_pending = true;
             pending_generation = current_generation + 1;
@@ -149,6 +151,7 @@ public:
         if (length == 0 || (clear_pending && pending_transition == GenerationTransitionKind::ClearAll)) {
             return;
         }
+        publication_revision.fetch_add(1, std::memory_order_release);
         const auto last_address = InclusiveRangeEnd(start_address, length);
         pending_ranges.add(boost::icl::discrete_interval<u32>::closed(
             start_address, last_address));

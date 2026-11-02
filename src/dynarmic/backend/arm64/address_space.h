@@ -11,6 +11,8 @@
 #include <unordered_map>
 
 #include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
+#include <boost/container/small_vector.hpp>
 #include <mcl/stdint.hpp>
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
@@ -60,6 +62,8 @@ protected:
     virtual void CodeTranslationCompleted(const IR::Block&, u64) const noexcept {}
     virtual void CaptureEmittedBlock(const IR::Block&, EmittedBlockInfo&) {}
     virtual void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) = 0;
+    virtual CodePtr PublishEntry(IR::LocationDescriptor, CodePtr code) { return code; }
+    virtual void FinishEntryPublication(IR::LocationDescriptor, CodePtr) {}
 
     void ProtectCodeMemory() {
 #if defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT) || defined(__APPLE__) || defined(__OpenBSD__)
@@ -75,15 +79,16 @@ protected:
 
     size_t GetRemainingSize();
     void EnsureEmissionSpace();
-    EmittedBlockInfo Emit(IR::Block& ir_block);
+    const EmittedBlockInfo& Emit(IR::Block& ir_block);
     // Fixed relocations are consumed synchronously, never retained by the cache.
     const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                        std::span<const Relocation> fixed_relocations = {});
-    void Link(EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
+    void Link(const EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
     template<bool Synchronize = false>
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
+    void PublishBranch(CodePtr patch, CodePtr target);
 
     FakeCall FastmemCallback(u64 host_pc);
 
@@ -103,9 +108,10 @@ protected:
     // Native entries are appended in address order within each generation.
     // A packed index avoids empty hash buckets carrying full block metadata.
     boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
-    // Keep one node per incoming edge. Hash buckets contain pointers rather
-    // than a full set/vector for every target and every unused bucket.
-    std::unordered_multimap<IR::LocationDescriptor, CodePtr> block_references;
+    // Append incoming edges without walking the target's existing callers.
+    // Multimap insertion scans all equivalent keys on libc++, making a common
+    // branch target quadratic to compile. Keep its callers contiguous instead.
+    std::unordered_map<IR::LocationDescriptor, boost::container::small_vector<CodePtr, 1>> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

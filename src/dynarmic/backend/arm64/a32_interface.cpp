@@ -92,6 +92,45 @@ struct Jit::Impl final {
         return current_address_space->Get(location) != nullptr;
     }
 
+    bool OptimizeBlock(u64 descriptor) {
+        ASSERT(!jit_interface->is_executing);
+        if (!shared_slab || !conf.tiered_compilation || conf.fast_compilation)
+            return false;
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
+        const auto revision = shared_slab->compilation_revision();
+        const auto generation = shared_slab->generation_snapshot();
+        NativeCodeSlab::BlockDescriptor previous;
+        if (!shared_slab->find_block(descriptor, generation, previous) || !previous.baseline ||
+            shared_slab->space_remaining() < 1024U * 1024U)
+            return false;
+        const auto started = std::chrono::steady_clock::now();
+        auto block = TranslateA32IR(conf, IR::LocationDescriptor{descriptor});
+        auto native_template = BuildTemplate(block);
+        if (!native_template)
+            return false;
+        const auto emitted = shared_slab->import_template(*native_template, generation, conf, revision);
+        if (emitted.newly_emitted) {
+            GetA32RuntimeCallbacks(conf)->NativeCodeTemplateProduced(std::move(native_template));
+            GetA32RuntimeCallbacks(conf)->CodeTranslationCompleted(descriptor,
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count()), block);
+        }
+        return emitted.newly_emitted;
+    }
+
+    PortableIREmitOutcome EmitPreparedBlock(IR::Block block, u64 generation, u64 revision, bool baseline) {
+        ASSERT(!jit_interface->is_executing);
+        auto source = conf;
+        source.fast_compilation = baseline;
+        auto native_template = BuildTemplate(block, &source);
+        const auto result = native_template
+            ? shared_slab->import_template(*native_template, generation, source, revision)
+            : shared_slab->emit(block, generation, source, revision);
+        if (!result.entrypoint)
+            return PortableIREmitOutcome::EmitFailed;
+        return result.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent;
+    }
+
     void GeneratePortableIR(u64 descriptor) {
         ASSERT(!jit_interface->is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
@@ -108,7 +147,12 @@ struct Jit::Impl final {
         if (shared_slab) {
             if (!block.HasTerminal()) return PortableIREmitOutcome::EmitFailed;
             try {
-                const auto emitted = shared_slab->emit(block, shared_slab->generation(), conf);
+                const auto revision = shared_slab->compilation_revision();
+                const auto generation = shared_slab->generation();
+                const auto native_template = BuildTemplate(block);
+                const auto emitted = native_template
+                    ? shared_slab->import_template(*native_template, generation, conf, revision)
+                    : shared_slab->emit(block, generation, conf, revision);
                 if (!emitted.entrypoint) return PortableIREmitOutcome::EmitFailed;
                 return emitted.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent;
             } catch (...) {
@@ -257,6 +301,18 @@ struct Jit::Impl final {
     }
 
 private:
+    std::shared_ptr<const NativeCodeTemplate> BuildTemplate(IR::Block& block, const UserConfig* source = nullptr) {
+        if (!conf.tiered_compilation || !conf.enable_native_code_templates)
+            return {};
+        if (!private_builder) {
+            auto builder_config = conf;
+            // A recyclable private emission buffer, no dispatch table/prelude.
+            builder_config.code_cache_size = 2U * 1024U * 1024U;
+            private_builder = std::make_unique<A32AddressSpace>(builder_config, nullptr, nullptr, true);
+        }
+        return private_builder->BuildTemplate(block, source ? *source : conf);
+    }
+
     static const void* LookupSharedThunk(void* arg) {
         auto& self = *static_cast<Impl*>(arg);
         const auto entry = self.GetSharedBlock(self.current_state.GetLocationDescriptor(), self.active_generation).entrypoint;
@@ -319,7 +375,12 @@ private:
                 }
             }
         }
+        if (jit_interface->is_executing && GetA32RuntimeCallbacks(conf)->DeferCodeTranslation(descriptor.Value())) {
+            HaltExecution(HaltReason::CodeCacheMiss);
+            return {shared_slab->return_from_run_code(), 0, generation};
+        }
         const auto started = std::chrono::steady_clock::now();
+        const auto revision = shared_slab->compilation_revision();
         auto* prepared = portable_provider ? portable_provider(portable_provider_arg, descriptor.Value(), generation) : nullptr;
         bool completed = false;
         const auto complete = [&](PortableIREmitOutcome outcome) {
@@ -340,7 +401,17 @@ private:
         NativeCodeSlab::BlockDescriptor emitted;
         try {
             auto ir = prepared ? std::move(*prepared) : TranslateA32IR(conf, descriptor);
-            emitted = shared_slab->emit(ir, generation, conf);
+            if (!prepared && jit_interface->is_executing && conf.tiered_compilation &&
+                GetA32RuntimeCallbacks(conf)->DeferCodeEmission(ir, generation, revision)) {
+                HaltExecution(HaltReason::CodeCacheMiss);
+                return {shared_slab->return_from_run_code(), 0, generation};
+            }
+            auto native_template = BuildTemplate(ir);
+            emitted = native_template
+                ? shared_slab->import_template(*native_template, generation, conf, revision)
+                : shared_slab->emit(ir, generation, conf, revision);
+            if (emitted.newly_emitted && native_template)
+                emitted.native_template = std::move(native_template);
             if (emitted.entrypoint) {
                 complete(emitted.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent);
                 if (!prepared && emitted.newly_emitted && emitted.native_template)
@@ -418,6 +489,7 @@ private:
     A32::UserConfig conf;
     A32JitState current_state{};
     std::unique_ptr<A32AddressSpace> current_address_space;
+    std::unique_ptr<A32AddressSpace> private_builder;
     NativeCodeSlab* shared_slab{};
     std::unique_ptr<FastDispatchCache> shared_fast_dispatch;
     u64 active_generation{};
@@ -466,6 +538,14 @@ Jit::GetHostExecutionBudgetResult() const {
 
 bool Jit::Precompile(std::uint64_t descriptor) {
     return impl->Precompile(descriptor);
+}
+
+bool Jit::OptimizeBlock(std::uint64_t descriptor) {
+    return impl->OptimizeBlock(descriptor);
+}
+
+Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block block, u64 generation, u64 revision, bool baseline) {
+    return impl->EmitPreparedBlock(std::move(block), generation, revision, baseline);
 }
 
 void Jit::GeneratePortableIR(std::uint64_t descriptor) {

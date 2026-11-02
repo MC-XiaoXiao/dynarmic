@@ -24,6 +24,8 @@
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/constants.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/interface/optimization_flags.h"
+#include "fp_mul.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/info.h"
 #include "dynarmic/common/fp/op.h"
@@ -1276,11 +1278,11 @@ void EmitX64::EmitFPVectorMinNumeric64(EmitContext& ctx, IR::Inst* inst) {
 }
 
 void EmitX64::EmitFPVectorMul32(EmitContext& ctx, IR::Inst* inst) {
-    EmitThreeOpVectorOperation<32, DefaultIndexer>(code, ctx, inst, &Xbyak::CodeGenerator::mulps);
+    EmitFPMulAccurate<32, true>(code, ctx, inst);
 }
 
 void EmitX64::EmitFPVectorMul64(EmitContext& ctx, IR::Inst* inst) {
-    EmitThreeOpVectorOperation<64, DefaultIndexer>(code, ctx, inst, &Xbyak::CodeGenerator::mulpd);
+    EmitFPMulAccurate<64, true>(code, ctx, inst);
 }
 
 template<typename FPT, bool needs_rounding_correction, bool needs_nan_correction>

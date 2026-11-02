@@ -17,6 +17,10 @@ std::uint64_t NativeCodeSlab::generation_snapshot() const noexcept {
     return impl->generation_snapshot();
 }
 
+std::uint64_t NativeCodeSlab::compilation_revision() const noexcept {
+    return impl->publication_revision.load(std::memory_order_acquire);
+}
+
 bool NativeCodeSlab::find_block(
     std::uint64_t location_descriptor, std::uint64_t expected_generation, BlockDescriptor& result) const {
     return impl->find_block(
@@ -29,8 +33,8 @@ NativeCodeSlab::BlockDescriptor NativeCodeSlab::emit(
 }
 
 NativeCodeSlab::BlockDescriptor NativeCodeSlab::emit(
-    IR::Block& block, std::uint64_t expected_generation, const UserConfig& runtime_config) {
-    return impl->emit(block, expected_generation, &runtime_config);
+    IR::Block& block, std::uint64_t expected_generation, const UserConfig& runtime_config, std::uint64_t expected_revision) {
+    return impl->emit(block, expected_generation, &runtime_config, expected_revision);
 }
 
 std::size_t NativeCodeSlab::space_remaining() const {

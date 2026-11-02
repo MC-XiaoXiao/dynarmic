@@ -18,7 +18,7 @@ struct EmittedBlockInfo;
 
 class A32AddressSpace final : public AddressSpace {
 public:
-    explicit A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*) = nullptr, void* lookup_arg = nullptr);
+    explicit A32AddressSpace(const A32::UserConfig& conf, const void* (*lookup)(void*) = nullptr, void* lookup_arg = nullptr, bool template_only = false);
 
     IR::Block GenerateIR(IR::LocationDescriptor) const override;
     IR::Block TranslateIR(IR::LocationDescriptor) const;
@@ -38,6 +38,8 @@ public:
     CodePtr ReturnFromRunCode() const { return static_cast<CodePtr>(prelude_info.return_from_run_code); }
     A32::NativeCodeSlab::BlockDescriptor EmitShared(IR::Block& block, const A32::UserConfig& source);
     A32::NativeCodeSlab::BlockDescriptor ImportTemplate(const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source);
+    std::shared_ptr<const A32::NativeCodeTemplate> BuildTemplate(IR::Block& block, const A32::UserConfig& source);
+    bool IsBaseline(IR::LocationDescriptor location) const;
     size_t SpaceRemaining() { return GetRemainingSize(); }
     void PublishBranchLinks(IR::LocationDescriptor descriptor) {
         RelinkBranchesForDescriptor(descriptor, Get(descriptor));
@@ -61,11 +63,18 @@ protected:
     void CodeTranslationCompleted(const IR::Block& block, u64 translation_nanoseconds) const noexcept override;
     void CaptureEmittedBlock(const IR::Block& block, EmittedBlockInfo& info) override;
     void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) override;
+    CodePtr PublishEntry(IR::LocationDescriptor, CodePtr) override;
+    void FinishEntryPublication(IR::LocationDescriptor, CodePtr) override;
 
     const A32::UserConfig conf;
     BlockRangeInformation<u32> block_ranges;
 
 private:
+    struct Entry {
+        CodePtr trampoline{};
+        bool baseline{};
+    };
+    tsl::robin_map<IR::LocationDescriptor, Entry> entries;
     std::shared_ptr<const A32::NativeCodeTemplate> emitted_template;
     const A32::UserConfig* emission_source{};
     const void* (*shared_lookup)(void*){};

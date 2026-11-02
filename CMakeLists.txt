@@ -19,8 +19,6 @@ option(DYNARMIC_FATAL_ERRORS "Errors are fatal" OFF)
 option(DYNARMIC_IGNORE_ASSERTS "Ignore asserts" OFF)
 option(DYNARMIC_TESTS "Build tests" ${BUILD_TESTING})
 option(DYNARMIC_TESTS_USE_UNICORN "Enable fuzzing tests against unicorn" OFF)
-option(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE
-       "Compile iLEmu portable-emit fault injection hooks" OFF)
 option(DYNARMIC_ENABLE_LOCAL_FUNCTION_BINDING
        "Bind non-weak shared-library functions locally (disables their interposition)" ${ANDROID})
 option(DYNARMIC_USE_LLVM "Support disassembly of jitted x86_64 code using LLVM" OFF)

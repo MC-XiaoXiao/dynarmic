@@ -49,7 +49,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (initialized) {
             const auto& old = *conf;
             if (config.code_cache_size != old.code_cache_size || config.arch_version != old.arch_version ||
-                config.fast_compilation != old.fast_compilation ||
+                config.tiered_compilation != old.tiered_compilation ||
+                (!config.tiered_compilation && config.fast_compilation != old.fast_compilation) ||
                 config.optimizations != old.optimizations || config.unsafe_optimizations != old.unsafe_optimizations ||
                 config.define_unpredictable_behaviour != old.define_unpredictable_behaviour ||
                 config.hook_hint_instructions != old.hook_hint_instructions || config.hook_isb != old.hook_isb ||
@@ -87,15 +88,16 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (!initialized || clear_pending || !pending_ranges.empty() || expected != current_generation)
             return false;
         if (auto ptr = emitter->Get(IR::LocationDescriptor{descriptor})) {
-            result = {ptr, 0, current_generation};
+            result = {ptr, 0, current_generation, false, {}, emitter->IsBaseline(IR::LocationDescriptor{descriptor})};
             return true;
         }
         return false;
     }
 
-    BlockDescriptor emit(IR::Block& block, u64 expected, const UserConfig* source = nullptr) {
+    BlockDescriptor emit(IR::Block& block, u64 expected, const UserConfig* source = nullptr, u64 expected_revision = 0) {
         std::lock_guard lock{mutex};
-        if (clear_pending || !pending_ranges.empty() || expected != current_generation)
+        if (clear_pending || !pending_ranges.empty() || expected != current_generation ||
+            (expected_revision && expected_revision != publication_revision.load(std::memory_order_acquire)))
             return {};
         if (auto ptr = emitter->Get(block.Location()))
             return {ptr, 0, current_generation, false};
@@ -113,24 +115,32 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         return {emitted.entrypoint, emitted.size, current_generation, true, emitted.native_template};
     }
 
-    BlockDescriptor import_template(const NativeCodeTemplate& native_template, u64 expected, const UserConfig& source) {
+    BlockDescriptor import_template(const NativeCodeTemplate& native_template, u64 expected, const UserConfig& source, u64 expected_revision = 0) {
         std::lock_guard lock{mutex};
-        if (!initialized || clear_pending || !pending_ranges.empty() || expected != current_generation)
+        if (!initialized || clear_pending || !pending_ranges.empty() || expected != current_generation ||
+            (expected_revision && expected_revision != publication_revision.load(std::memory_order_acquire)))
             return {};
         const IR::LocationDescriptor location{native_template.LocationDescriptor()};
-        if (auto ptr = emitter->Get(location))
-            return {ptr, 0, current_generation, false};
+        const auto previous = emitter->Get(location);
+        const bool upgrade = previous && source.tiered_compilation &&
+            emitter->IsBaseline(location) && !native_template.IsBaseline();
+        if (previous && !upgrade)
+            return {previous, 0, current_generation, false};
         if (emitter->SpaceRemaining() < 1024U * 1024U) {
+            if (upgrade)
+                return {};
             request_generation_transition(GenerationTransitionKind::RecycleSegment);
             return {};
         }
         const auto emitted = emitter->ImportTemplate(native_template, source);
         if (!emitted.entrypoint)
             return {};
-        if (active_executions != 0)
-            emitter->PublishBranchLinks(location);
-        pending_direct_link_targets.insert(location);
-        finish_pending_direct_link_publication();
+        if (!upgrade) {
+            if (active_executions != 0)
+                emitter->PublishBranchLinks(location);
+            pending_direct_link_targets.insert(location);
+            finish_pending_direct_link_publication();
+        }
         return {emitted.entrypoint, emitted.size, current_generation, true};
     }
 
@@ -228,8 +238,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
 };
 
 NativeCodeSlab::BlockDescriptor NativeCodeSlab::import_template(
-        const NativeCodeTemplate& native_template, u64 generation, const UserConfig& source) {
-    return impl->import_template(native_template, generation, source);
+        const NativeCodeTemplate& native_template, u64 generation, const UserConfig& source, u64 expected_revision) {
+    return impl->import_template(native_template, generation, source, expected_revision);
 }
 
 #include "dynarmic/backend/native_code_slab_interface.inc"

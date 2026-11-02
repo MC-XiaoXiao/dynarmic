@@ -16,6 +16,7 @@ class NativeCodeTemplate {
 public:
     virtual ~NativeCodeTemplate() = default;
     [[nodiscard]] virtual std::uint64_t LocationDescriptor() const noexcept = 0;
+    [[nodiscard]] virtual bool IsBaseline() const noexcept { return false; }
     [[nodiscard]] virtual std::size_t CodeSize() const noexcept = 0;
     [[nodiscard]] virtual std::size_t MemoryFootprint() const noexcept = 0;
 

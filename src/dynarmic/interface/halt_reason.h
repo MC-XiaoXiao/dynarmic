@@ -13,6 +13,7 @@ enum class HaltReason : std::uint32_t {
     Step = 0x00000001,
     CacheInvalidation = 0x00000002,
     MemoryAbort = 0x00000004,
+    CodeCacheMiss = 0x00000008,
     UserDefined1 = 0x01000000,
     UserDefined2 = 0x02000000,
     UserDefined3 = 0x04000000,
