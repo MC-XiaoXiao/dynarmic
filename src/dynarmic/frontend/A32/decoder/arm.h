@@ -49,7 +49,7 @@ ArmDecodeTable<V> GetArmDecodeTable() {
 
     ArmDecodeTable<V> table{};
     for (size_t i = 0; i < table.size(); ++i) {
-        for (auto matcher : list) {
+        for (const auto& matcher : list) {
             const auto expect = detail::ToFastLookupIndexArm(matcher.GetExpected());
             const auto mask = detail::ToFastLookupIndexArm(matcher.GetMask());
             if ((i & mask) == expect) {
