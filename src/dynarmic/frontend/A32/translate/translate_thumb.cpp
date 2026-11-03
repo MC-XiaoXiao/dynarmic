@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include "dynarmic/frontend/A32/translate/memory_instruction_commit.h"
 #include <tuple>
 
 #include <mcl/assert.hpp>
@@ -123,6 +124,8 @@ IR::Block TranslateThumb(LocationDescriptor descriptor, TranslateCallbacks* tcb,
             break;
         }
 
+        const MemoryInstructionCommit memory_commit{block};
+
         if (const auto maybe_instruction = ReadThumbInstruction(arm_pc, tcb)) {
             const auto [thumb_instruction, inst_size] = *maybe_instruction;
             const bool is_thumb_16 = inst_size == ThumbInstSize::Thumb16;
@@ -196,6 +199,8 @@ bool TranslateSingleThumbInstruction(IR::Block& block, LocationDescriptor descri
 
     const bool is_thumb_16 = IsThumb16(static_cast<u16>(thumb_instruction));
     visitor.current_instruction_size = is_thumb_16 ? 2 : 4;
+
+    const MemoryInstructionCommit memory_commit{block};
 
     const u64 ticks_for_instruction = 1;
 

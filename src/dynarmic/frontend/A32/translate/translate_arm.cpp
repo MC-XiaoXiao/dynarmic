@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include "dynarmic/frontend/A32/translate/memory_instruction_commit.h"
 #include <mcl/assert.hpp>
 
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
@@ -36,6 +37,8 @@ IR::Block TranslateArm(LocationDescriptor descriptor, TranslateCallbacks* tcb, c
             should_continue = false;
             break;
         }
+
+        const MemoryInstructionCommit memory_commit{block};
 
         if (const auto arm_instruction = tcb->MemoryReadCode(arm_pc)) {
             visitor.current_instruction_size = 4;
@@ -93,6 +96,8 @@ bool TranslateSingleArmInstruction(IR::Block& block, LocationDescriptor descript
     // TODO: Proper cond handling
 
     visitor.current_instruction_size = 4;
+
+    const MemoryInstructionCommit memory_commit{block};
 
     const u64 ticks_for_instruction = 1;
 
