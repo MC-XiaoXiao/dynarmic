@@ -33,9 +33,6 @@ IR::Block TranslateA32IR(const A32::UserConfig& conf, IR::LocationDescriptor des
     Optimization::NamingPass(ir_block);
 #ifndef NDEBUG
     Optimization::VerificationPass(ir_block);
-#else
-    if (!conf.fast_compilation)
-        Optimization::VerificationPass(ir_block);
 #endif
 
     return ir_block;
