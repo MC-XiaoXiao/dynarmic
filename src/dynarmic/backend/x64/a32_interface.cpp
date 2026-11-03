@@ -120,8 +120,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         std::uint64_t last_touch{};
         std::size_t used_bytes{};
         bool initialized{};
-        // Includes invalidated versions until their physical code is reused.
-        std::vector<IR::LocationDescriptor> locations;
     };
 
     void initialize_code_segments() {
@@ -155,8 +153,9 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
                                         ? begin + usable_bytes
                                         : segment_begin + segment_bytes;
             code_segments.push_back(
-                CodeSegment{segment_begin, segment_end, 0U, 0U, false, {}});
+                CodeSegment{segment_begin, segment_end, 0U, 0U, false});
         }
+        emitter->SetCodeSegmentCount(segment_count);
         reset_code_segments();
     }
 
@@ -165,7 +164,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
             segment.last_touch = 0U;
             segment.used_bytes = 0U;
             segment.initialized = false;
-            segment.locations.clear();
         }
         current_segment = 0U;
         segment_touch_clock = 1U;
@@ -255,7 +253,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         // An unused segment has never published code or source patch sites.
         // Reaching it for the first time needs no emitter-wide retirement pass.
         const auto retired = segment.initialized
-                                 ? emitter->RetireCodeRange(segment.begin, segment.end, segment.locations)
+                                 ? emitter->RetireCodeRange(segment.begin, segment.end, victim)
                                  : A32EmitX64::RetiredCodeStats{};
         live_allocated_code_bytes =
             segment.used_bytes > live_allocated_code_bytes
@@ -267,7 +265,6 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         segment.initialized = true;
         segment.last_touch = ++segment_touch_clock;
         segment.used_bytes = 0U;
-        segment.locations.clear();
         current_segment = victim;
         block_of_code->SetCodePtr(segment.begin);
         return retired;
@@ -356,9 +353,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
                 existing->entrypoint, existing->size, current_generation,
                 false};
         }
-        const auto result = emitter->Emit(block);
+        const auto result = emitter->Emit(block, current_segment);
         if (result.entrypoint != nullptr) {
-            code_segments[current_segment].locations.push_back(block.Location());
             publish_direct_link_target(
                 block.Location(), result.entrypoint);
             update_active_segment_usage();
@@ -385,9 +381,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (active_segment_space_remaining() < required)
             return {};
         block_of_code->EnsureMemoryCommitted(required);
-        const auto result = emitter->ImportTemplate(native_template, source);
+        const auto result = emitter->ImportTemplate(native_template, source, current_segment);
         if (result.entrypoint) {
-            code_segments[current_segment].locations.push_back(location);
             publish_direct_link_target(location, result.entrypoint);
             update_active_segment_usage();
             touch_code_segment(result.entrypoint);

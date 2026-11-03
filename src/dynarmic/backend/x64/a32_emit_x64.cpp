@@ -124,7 +124,8 @@ A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_in
 
 A32EmitX64::~A32EmitX64() = default;
 
-A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
+A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block, std::size_t code_segment) {
+    emitting_segment = code_segment;
     produced_native_template.reset();
     native_block_links.clear();
     if (conf.very_verbose_debugging_output) {
@@ -211,17 +212,17 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
         }
     }
     native_capture_entry = nullptr;
-    return PublishBlock(block.Location(), block.EndLocation(), entrypoint, size);
+    return PublishBlock(block.Location(), block.EndLocation(), entrypoint, size, code_segment);
 }
 
 A32EmitX64::BlockDescriptor A32EmitX64::PublishBlock(IR::LocationDescriptor location,
-    IR::LocationDescriptor end, const u8* entrypoint, size_t size) {
+    IR::LocationDescriptor end, const u8* entrypoint, size_t size, std::size_t code_segment) {
 
     const A32::LocationDescriptor descriptor{location};
     const A32::LocationDescriptor end_location{end};
 
     const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), end_location.PC() - 1);
-    block_ranges.AddRange(range, descriptor);
+    segment_metadata[code_segment].ranges.AddRange(range, descriptor);
 
     const auto registered = RegisterBlock(descriptor, entrypoint, size);
     return registered;
@@ -229,6 +230,10 @@ A32EmitX64::BlockDescriptor A32EmitX64::PublishBlock(IR::LocationDescriptor loca
 
 std::shared_ptr<const A32::NativeCodeTemplate> A32EmitX64::TakeNativeTemplate() {
     return std::exchange(produced_native_template, {});
+}
+
+void A32EmitX64::SetCodeSegmentCount(std::size_t count) {
+    segment_metadata.resize(count);
 }
 
 void A32EmitX64::RecordNativeLink(NativeBlockLink::Kind kind, const IR::LocationDescriptor& target) {
@@ -243,7 +248,9 @@ void A32EmitX64::RecordNativeLink(NativeBlockLink::Kind kind, const IR::Location
 }
 
 A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
-    const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source) {
+    const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source,
+    std::size_t code_segment) {
+    emitting_segment = code_segment;
     const auto* const captured = dynamic_cast<const A32NativeCodeTemplate*>(&native_template);
     if (!captured || !native_environment ||
         !captured->environment->Compatible(source, *native_environment) ||
@@ -279,13 +286,16 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
         }
     }
     code.SetCodePtr(end);
-    return PublishBlock(captured->location, captured->end_location, entrypoint, bytes.size());
+    return PublishBlock(captured->location, captured->end_location, entrypoint, bytes.size(), code_segment);
 }
 
 void A32EmitX64::ClearCache() {
     produced_native_template.reset();
     EmitX64::ClearCache();
-    block_ranges.ClearCache();
+    for (auto& segment : segment_metadata) {
+        segment.ranges.ClearCache();
+        segment.patch_targets.clear();
+    }
     retired_code_bytes = 0;
     ClearFastDispatchTable();
     fastmem_patch_info.clear();
@@ -293,7 +303,11 @@ void A32EmitX64::ClearCache() {
 
 tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
     const boost::icl::interval_set<u32>& ranges) {
-    const auto locations = block_ranges.InvalidateRanges(ranges);
+    tsl::robin_set<IR::LocationDescriptor> locations;
+    for (auto& segment : segment_metadata) {
+        const auto invalidated = segment.ranges.InvalidateRanges(ranges);
+        locations.insert(invalidated.begin(), invalidated.end());
+    }
     for (const auto& location : locations) {
         if (const auto block = GetBasicBlock(location)) {
             retired_code_bytes += static_cast<std::uint64_t>(block->size);
@@ -323,25 +337,15 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
 
 A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     const void* begin, const void* end,
-    std::span<const IR::LocationDescriptor> candidates) {
+    std::size_t code_segment) {
     const auto* const first = static_cast<const u8*>(begin);
     const auto* const last = static_cast<const u8*>(end);
     if (first == nullptr || last == nullptr || first >= last) {
         return {};
     }
 
-    tsl::robin_set<IR::LocationDescriptor> locations;
+    const auto locations = segment_metadata[code_segment].ranges.InvalidateAll();
     std::uint64_t code_bytes{};
-    // Range invalidation leaves the physical code in its segment. A descriptor
-    // may have been recompiled elsewhere since this candidate was appended.
-    for (const auto& location : candidates) {
-        const auto block = GetBasicBlock(location);
-        if (block && block->entrypoint >= first && block->entrypoint < last &&
-            locations.insert(location).second) {
-            code_bytes += block->size;
-        }
-    }
-    block_ranges.InvalidateLocations(locations);
     code.EnableWriting();
     SCOPE_EXIT {
         code.DisableWriting();
@@ -349,10 +353,12 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     // The complete segment is about to be reused, including code retired by
     // earlier range invalidations. Forget its source sites before unpatching
     // targets so only incoming links from surviving segments are rewritten.
-    ForgetPatchLocations(first, last);
+    ForgetPatchLocations(first, last, code_segment);
     for (const auto& location : locations) {
+        const auto block = block_descriptors.find(location);
+        code_bytes += block->second.size;
         Unpatch(location);
-        block_descriptors.erase(location);
+        block_descriptors.erase(block);
     }
 
     for (auto it = fastmem_patch_info.begin();
@@ -380,25 +386,48 @@ void A32EmitX64::PatchPublishedTarget(
     Patch(location, entrypoint);
 }
 
-void A32EmitX64::ForgetPatchLocations(CodePtr first, CodePtr last) {
-    for (auto entry = patch_information.begin(); entry != patch_information.end();) {
-        if (entry->second.ForgetSources(first, last)) {
-            const auto retired = entry++;
-            patch_information.erase(retired);
-        } else {
-            ++entry;
+A32EmitX64::PatchInformation& A32EmitX64::PatchesFor(const IR::LocationDescriptor& target) {
+    segment_metadata[emitting_segment].patch_targets.push_back(target);
+    return EmitX64::PatchesFor(target);
+}
+
+void A32EmitX64::ForgetPatchLocations(CodePtr first, CodePtr last, std::size_t code_segment) {
+    auto& targets = segment_metadata[code_segment].patch_targets;
+    // A dense segment can name more source sites than the table has targets.
+    // In that case a sequential scan avoids sorting and random target lookups.
+    if (targets.size() >= patch_information.size()) {
+        for (auto entry = patch_information.begin(); entry != patch_information.end();) {
+            if (entry->second.ForgetSources(first, last)) {
+                const auto retired = entry++;
+                patch_information.erase(retired);
+            } else {
+                ++entry;
+            }
+        }
+    } else {
+        std::sort(targets.begin(), targets.end());
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        // Every recorded target retains a source site in this physical segment,
+        // including sites whose guest descriptor was invalidated earlier.
+        for (const auto& target : targets) {
+            const auto entry = patch_information.find(target);
+            if (entry->second.ForgetSources(first, last))
+                patch_information.erase(entry);
         }
     }
+    targets.clear();
 }
 
 A32EmitX64::CacheStats A32EmitX64::GetCacheStats() const noexcept {
-    const auto range_stats = block_ranges.GetStats();
-    return CacheStats{
-        range_stats.range_count,
-        range_stats.descriptor_count,
-        range_stats.invalidated_descriptors,
-        retired_code_bytes,
-    };
+    CacheStats stats{};
+    for (const auto& segment : segment_metadata) {
+        const auto ranges = segment.ranges.GetStats();
+        stats.range_count += ranges.range_count;
+        stats.descriptor_count += ranges.descriptor_count;
+        stats.invalidated_descriptors += ranges.invalidated_descriptors;
+    }
+    stats.retired_code_bytes = retired_code_bytes;
+    return stats;
 }
 
 A32::NativeCodeSlab::CodeRangeSnapshot A32EmitX64::GetCodeRanges(size_t maximum_ranges) const {

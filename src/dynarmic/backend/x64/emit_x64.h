@@ -173,7 +173,8 @@ protected:
     virtual void EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) = 0;
     virtual void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) = 0;
 
-    PatchInformation& PatchesFor(const IR::LocationDescriptor& target) {
+    // Source registration only; repatching existing targets uses Patch().
+    virtual PatchInformation& PatchesFor(const IR::LocationDescriptor& target) {
         return patch_information.try_emplace(target, &metadata_storage).first->second;
     }
 

@@ -9,7 +9,6 @@
 #include <memory>
 #include <optional>
 #include <set>
-#include <span>
 #include <tuple>
 #include <vector>
 
@@ -66,16 +65,18 @@ public:
      * Emit host machine code for a basic block with intermediate representation `block`.
      * @note block is modified.
      */
-    BlockDescriptor Emit(IR::Block& block);
-    BlockDescriptor ImportTemplate(const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source);
+    BlockDescriptor Emit(IR::Block& block, std::size_t code_segment);
+    BlockDescriptor ImportTemplate(const A32::NativeCodeTemplate& native_template, const A32::UserConfig& source,
+        std::size_t code_segment);
     std::shared_ptr<const A32::NativeCodeTemplate> TakeNativeTemplate();
+    void SetCodeSegmentCount(std::size_t count);
 
     void ClearCache() override;
 
     tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(
         const boost::icl::interval_set<u32>& ranges);
     RetiredCodeStats RetireCodeRange(const void* begin, const void* end,
-        std::span<const IR::LocationDescriptor> candidates);
+        std::size_t code_segment);
     void PatchPublishedTarget(
         const IR::LocationDescriptor& location, const void* entrypoint);
 
@@ -108,7 +109,14 @@ protected:
     const A32::UserConfig conf;
     const std::vector<HostLoc> gpr_order;
     A32::Jit* jit_interface;
-    BlockRangeInformation<u32> block_ranges;
+    // Source links survive guest range invalidation until their native
+    // allocation segment is reused. Guest ranges track only live descriptors.
+    struct CodeSegmentMetadata {
+        BlockRangeInformation<u32> ranges;
+        std::vector<IR::LocationDescriptor> patch_targets;
+    };
+    std::vector<CodeSegmentMetadata> segment_metadata;
+    std::size_t emitting_segment{};
     std::uint64_t retired_code_bytes{};
     std::shared_ptr<const A32NativeTemplateEnvironment> native_environment;
     std::shared_ptr<const A32::NativeCodeTemplate> produced_native_template;
@@ -117,7 +125,7 @@ protected:
     NativeReferenceRecorder native_references{code};
     void RecordNativeLink(NativeBlockLink::Kind kind, const IR::LocationDescriptor& target);
     BlockDescriptor PublishBlock(IR::LocationDescriptor location, IR::LocationDescriptor end_location,
-        const u8* entrypoint, size_t size);
+        const u8* entrypoint, size_t size, std::size_t code_segment);
 
     void EmitInstructionFetch(A32EmitContext& ctx);
     void EmitCondPrelude(const A32EmitContext& ctx);
@@ -125,7 +133,8 @@ protected:
     std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
     FastDispatchEntry* fast_dispatch_table = nullptr;
     void ClearFastDispatchTable();
-    void ForgetPatchLocations(CodePtr first, CodePtr last);
+    PatchInformation& PatchesFor(const IR::LocationDescriptor& target) override;
+    void ForgetPatchLocations(CodePtr first, CodePtr last, std::size_t code_segment);
 
     void (*memory_read_128)() = nullptr;   // Dummy
     void (*memory_write_128)() = nullptr;  // Dummy

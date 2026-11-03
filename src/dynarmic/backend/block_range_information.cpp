@@ -55,6 +55,22 @@ void BlockRangeInformation<ProgramCounterType>::ClearCache() {
 }
 
 template<typename ProgramCounterType>
+std::vector<IR::LocationDescriptor> BlockRangeInformation<ProgramCounterType>::InvalidateAll() {
+    std::vector<IR::LocationDescriptor> locations;
+    locations.reserve(ranges_by_descriptor.size());
+    for (const auto& [location, ranges] : ranges_by_descriptor)
+        locations.push_back(location);
+    invalidated_descriptors += locations.size();
+    insertion_hint.position.reset();
+    block_ranges.clear();
+    // A recycled segment will be filled again. Reuse its bounded bucket
+    // storage; a full ClearCache still releases that storage.
+    ranges_by_descriptor.clear();
+    range_count = 0;
+    return locations;
+}
+
+template<typename ProgramCounterType>
 tsl::robin_set<IR::LocationDescriptor> BlockRangeInformation<ProgramCounterType>::InvalidateRanges(const boost::icl::interval_set<ProgramCounterType>& ranges) {
     tsl::robin_set<IR::LocationDescriptor> erase_locations;
     for (auto invalidate_interval : ranges) {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
@@ -33,6 +34,7 @@ public:
     void AddRange(boost::icl::discrete_interval<ProgramCounterType> range, IR::LocationDescriptor location);
     void ClearCache();
     tsl::robin_set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<ProgramCounterType>& ranges);
+    std::vector<IR::LocationDescriptor> InvalidateAll();
     void InvalidateLocations(
         const tsl::robin_set<IR::LocationDescriptor>& locations);
     [[nodiscard]] Stats GetStats() const noexcept;
