@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 #include <span>
-#include <unordered_map>
 
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
@@ -85,7 +84,7 @@ protected:
                                        std::span<const Relocation> fixed_relocations = {});
     void Link(const EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
     template<bool Synchronize = false>
-    void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
+    void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, std::span<const BlockRelocation> block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void PublishBranch(CodePtr patch, CodePtr target);
@@ -108,10 +107,15 @@ protected:
     // Native entries are appended in address order within each generation.
     // A packed index avoids empty hash buckets carrying full block metadata.
     boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
-    // Append incoming edges without walking the target's existing callers.
-    // Multimap insertion scans all equivalent keys on libc++, making a common
-    // branch target quadratic to compile. Keep its callers contiguous instead.
-    std::unordered_map<IR::LocationDescriptor, boost::container::small_vector<CodePtr, 1>> block_references;
+    struct BlockReference {
+        CodePtr entry_point;
+        std::span<const BlockRelocation> relocations;
+    };
+    // Relocation buffers are immutable and owned by block_infos (or its shared
+    // templates) until ClearCache, including sources invalidated in between.
+    // Moving the metadata index preserves these separately allocated buffers.
+    // Index them directly so patching does not search both source indexes again.
+    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

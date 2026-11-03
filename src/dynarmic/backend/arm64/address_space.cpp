@@ -335,13 +335,13 @@ void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relo
     }
 
     for (const auto& [target_descriptor, list] : block_info.BlockRelocations()) {
-        block_references[target_descriptor].push_back(block_info.entry_point);
+        block_references[target_descriptor].push_back({block_info.entry_point, list});
         LinkBlockLinks(block_info.entry_point, Get(target_descriptor), list);
     }
 }
 
 template<bool Synchronize>
-void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list) {
+void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, std::span<const BlockRelocation> block_relocations_list) {
     using namespace oaknut;
     using namespace oaknut::util;
 
@@ -396,14 +396,8 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
     const auto references = block_references.find(target_descriptor);
     if (references == block_references.end())
         return;
-    for (const auto source : references->second) {
-        const auto info = block_infos.find(source);
-        if (info == block_infos.end())
-            continue;
-        const auto relocations = info->second.BlockRelocations().find(target_descriptor);
-        if (relocations == info->second.BlockRelocations().end())
-            continue;
-        for (const auto [offset, type] : relocations->second) {
+    for (const auto& [source, relocations] : references->second) {
+        for (const auto [offset, type] : relocations) {
             if (type != BlockRelocationType::Branch)
                 continue;
             PublishBranch(source + offset, target_ptr);
@@ -432,14 +426,8 @@ void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor,
     const auto references = block_references.find(target_descriptor);
     if (references == block_references.end())
         return;
-    for (const auto code_ptr : references->second) {
-        if (auto block_iter = block_infos.find(code_ptr); block_iter != block_infos.end()) {
-            const EmittedBlockInfo& block_info = block_iter->second;
-
-            if (auto relocation_iter = block_info.BlockRelocations().find(target_descriptor); relocation_iter != block_info.BlockRelocations().end()) {
-                LinkBlockLinks<true>(block_info.entry_point, target_ptr, relocation_iter->second);
-            }
-        }
+    for (const auto& [source, relocations] : references->second) {
+        LinkBlockLinks<true>(source, target_ptr, relocations);
     }
 }
 
