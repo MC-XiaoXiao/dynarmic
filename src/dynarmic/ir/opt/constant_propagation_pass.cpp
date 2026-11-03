@@ -22,6 +22,39 @@ using Op = Dynarmic::IR::Opcode;
 
 namespace {
 
+bool HasZeroUpper64(IR::Value value) {
+    // Bound the lane walk so repeated insertions keep this pass linear.
+    for (size_t depth = 0; depth < 16; ++depth) {
+        const auto* inst = value.GetInstRecursive();
+        switch (inst->GetOpcode()) {
+        case Op::ZeroVector:
+        case Op::VectorZeroUpper:
+        case Op::VectorZeroExtend64:
+            return true;
+        case Op::VectorSetElement8:
+            if (inst->GetArg(1).GetU8() >= 8)
+                return false;
+            break;
+        case Op::VectorSetElement16:
+            if (inst->GetArg(1).GetU8() >= 4)
+                return false;
+            break;
+        case Op::VectorSetElement32:
+            if (inst->GetArg(1).GetU8() >= 2)
+                return false;
+            break;
+        case Op::VectorSetElement64:
+            if (inst->GetArg(1).GetU8() != 0)
+                return false;
+            break;
+        default:
+            return false;
+        }
+        value = inst->GetArg(0);
+    }
+    return false;
+}
+
 // Tiny helper to avoid the need to store based off the opcode
 // bit size all over the place within folding functions.
 void ReplaceUsesWith(IR::Inst& inst, bool is_32_bit, u64 value) {
@@ -547,6 +580,13 @@ void ConstantPropagation(IR::Block& block) {
         case Op::ByteReverseDual:
             FoldByteReverse(inst, opcode);
             break;
+        case Op::VectorZeroUpper: {
+            const auto value = inst.GetArg(0);
+            if (HasZeroUpper64(value)) {
+                inst.ReplaceUsesWith(IR::Value{value.GetInstRecursive()});
+            }
+            break;
+        }
         default:
             break;
         }
