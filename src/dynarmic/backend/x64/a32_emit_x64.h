@@ -130,8 +130,7 @@ protected:
     std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
     FastDispatchEntry* fast_dispatch_table = nullptr;
     void ClearFastDispatchTable();
-    using RetiredRange = std::pair<std::uintptr_t, std::uintptr_t>;
-    void ForgetPatchLocations(std::vector<RetiredRange> ranges);
+    void ForgetPatchLocations(CodePtr first, CodePtr last);
 
     void (*memory_read_128)() = nullptr;   // Dummy
     void (*memory_write_128)() = nullptr;  // Dummy

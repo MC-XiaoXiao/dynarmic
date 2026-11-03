@@ -304,9 +304,11 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
         }
     }
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        // The slab reaches this path only after every executor has left
-        // generated code. Revert links to retiring targets before removing
-        // patch sites owned by the retiring source blocks.
+        // All executors have left generated code. Remove incoming links to
+        // invalidated targets, but retain their source patch sites until the
+        // containing host segment is recycled. Range invalidation does not
+        // reuse those bytes; scanning every live patch for each guest write
+        // would turn a single-block invalidation into a slab-wide operation.
         code.EnableWriting();
         SCOPE_EXIT {
             code.DisableWriting();
@@ -314,15 +316,6 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
         for (const auto& location : locations) {
             Unpatch(location);
         }
-        std::vector<RetiredRange> retired_ranges;
-        retired_ranges.reserve(locations.size());
-        for (const auto& location : locations) {
-            if (const auto block = GetBasicBlock(location)) {
-                const auto begin = reinterpret_cast<std::uintptr_t>(block->entrypoint);
-                retired_ranges.emplace_back(begin, begin + block->size);
-            }
-        }
-        ForgetPatchLocations(std::move(retired_ranges));
         for (const auto& location : locations) {
             block_descriptors.erase(location);
         }
@@ -341,7 +334,6 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     }
 
     tsl::robin_set<IR::LocationDescriptor> locations;
-    std::vector<RetiredRange> retired_ranges;
     std::uint64_t code_bytes{};
     auto entrypoint = blocks_by_entrypoint.lower_bound(first);
     while (entrypoint != blocks_by_entrypoint.end() &&
@@ -349,9 +341,6 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
         const auto location = entrypoint->second;
         if (const auto block = GetBasicBlock(location)) {
             code_bytes += block->size;
-            const auto block_begin = reinterpret_cast<std::uintptr_t>(block->entrypoint);
-            retired_ranges.emplace_back(
-                block_begin, block_begin + block->size);
         }
         locations.insert(location);
         entrypoint = blocks_by_entrypoint.erase(entrypoint);
@@ -361,12 +350,14 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
     SCOPE_EXIT {
         code.DisableWriting();
     };
+    // The complete segment is about to be reused, including code retired by
+    // earlier range invalidations. Forget its source sites before unpatching
+    // targets so only incoming links from surviving segments are rewritten.
+    ForgetPatchLocations(first, last);
     for (const auto& location : locations) {
         Unpatch(location);
         block_descriptors.erase(location);
     }
-
-    ForgetPatchLocations(std::move(retired_ranges));
 
     for (auto it = fastmem_patch_info.begin();
          it != fastmem_patch_info.end();) {
@@ -393,44 +384,21 @@ void A32EmitX64::PatchPublishedTarget(
     Patch(location, entrypoint);
 }
 
-void A32EmitX64::ForgetPatchLocations(std::vector<RetiredRange> ranges) {
-    std::erase_if(ranges, [](const auto& range) { return range.first >= range.second; });
-    if (ranges.empty()) {
-        return;
-    }
-    std::sort(ranges.begin(), ranges.end());
-    // Retire an exact union of source ranges in one patch-table pass. A
-    // per-block scan is quadratic during segment rotation and prevents the
-    // executor from returning to its cooperative host boundary.
-    std::size_t merged = 0;
-    for (const auto range : ranges) {
-        if (merged != 0 && range.first <= ranges[merged - 1].second) {
-            ranges[merged - 1].second = std::max(ranges[merged - 1].second, range.second);
-        } else {
-            ranges[merged++] = range;
-        }
-    }
-    ranges.resize(merged);
-    const auto retired = [&ranges](CodePtr location) {
-        const auto address = reinterpret_cast<std::uintptr_t>(location);
-        auto next = std::upper_bound(ranges.begin(), ranges.end(), address,
-            [](std::uintptr_t value, const RetiredRange& range) { return value < range.first; });
-        return next != ranges.begin() && address < std::prev(next)->second;
+void A32EmitX64::ForgetPatchLocations(CodePtr first, CodePtr last) {
+    const auto retired = [first, last](CodePtr location) {
+        return location >= first && location < last;
     };
-    std::vector<IR::LocationDescriptor> empty_targets;
-    for (auto entry = patch_information.begin(); entry != patch_information.end(); ++entry) {
+    for (auto entry = patch_information.begin(); entry != patch_information.end();) {
         auto& patches = entry->second;
-        const auto& target = entry->first;
         std::erase_if(patches.jg, retired);
         std::erase_if(patches.jz, retired);
         std::erase_if(patches.jmp, retired);
         std::erase_if(patches.mov_rcx, retired);
         if (patches.jg.empty() && patches.jz.empty() && patches.jmp.empty() && patches.mov_rcx.empty()) {
-            empty_targets.push_back(target);
+            entry = patch_information.erase(entry);
+        } else {
+            ++entry;
         }
-    }
-    for (const auto& target : empty_targets) {
-        patch_information.erase(target);
     }
 }
 
