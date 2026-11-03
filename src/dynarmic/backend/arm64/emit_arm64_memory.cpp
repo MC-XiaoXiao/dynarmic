@@ -493,7 +493,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -539,7 +539,7 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -625,7 +625,7 @@ void FastmemEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::In
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -680,7 +680,7 @@ void FastmemEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::I
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }

@@ -5,9 +5,9 @@
 
 #pragma once
 
-#include <functional>
 #include <vector>
 
+#include <boost/function.hpp>
 #include <oaknut/oaknut.hpp>
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
@@ -35,7 +35,8 @@ struct EmitContext {
     FastmemManager& fastmem;
 
     DeferredLabels labels;
-    std::vector<std::function<void()>> deferred_emits;
+    // Destroy callbacks before labels and their shared block-local resource.
+    std::vector<boost::function<void()>> deferred_emits;
 
     FP::FPCR FPCR(bool fpcr_controlled = true) const {
         const FP::FPCR fpcr = conf.descriptor_to_fpcr(block.Location());
