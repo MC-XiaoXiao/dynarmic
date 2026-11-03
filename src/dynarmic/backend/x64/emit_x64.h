@@ -9,6 +9,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -138,10 +139,12 @@ protected:
 
     // Patching
     struct PatchInformation {
-        std::vector<CodePtr> jg;
-        std::vector<CodePtr> jz;
-        std::vector<CodePtr> jmp;
-        std::vector<CodePtr> mov_rcx;
+        explicit PatchInformation(std::pmr::memory_resource* storage)
+                : jg(storage), jz(storage), jmp(storage), mov_rcx(storage) {}
+        std::pmr::vector<CodePtr> jg;
+        std::pmr::vector<CodePtr> jz;
+        std::pmr::vector<CodePtr> jmp;
+        std::pmr::vector<CodePtr> mov_rcx;
     };
     void Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
     virtual void Unpatch(const IR::LocationDescriptor& target_desc);
@@ -150,13 +153,22 @@ protected:
     virtual void EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) = 0;
     virtual void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) = 0;
 
+    PatchInformation& PatchesFor(const IR::LocationDescriptor& target) {
+        return patch_information.try_emplace(target, &metadata_storage).first->second;
+    }
+
+    // The slab mutex serializes emission and invalidation. Pool small metadata
+    // allocations per emitter instead of contending with guest/host allocations
+    // for every patch node and short vector during generation retirement.
+    std::pmr::unsynchronized_pool_resource metadata_storage{{64, 512}};
+
     // State
     BlockOfCode& code;
     ExceptionHandler exception_handler;
     tsl::robin_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
     // Patch records contain four vectors. Keep them in stable nodes so spare
     // hash buckets and table growth do not duplicate these wide records.
-    std::unordered_map<IR::LocationDescriptor, PatchInformation> patch_information;
+    std::pmr::unordered_map<IR::LocationDescriptor, PatchInformation> patch_information{&metadata_storage};
 };
 
 }  // namespace Dynarmic::Backend::X64

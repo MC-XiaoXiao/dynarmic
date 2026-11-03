@@ -264,7 +264,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
     const auto* const end = code.getCurr();
     for (const auto& link : captured->links) {
         const IR::LocationDescriptor target{link.descriptor};
-        auto& patches = patch_information[target];
+        auto& patches = PatchesFor(target);
         const auto existing = GetBasicBlock(target);
         const auto pointer = existing ? existing->entrypoint : nullptr;
         code.SetCodePtr(entrypoint + link.offset);
@@ -1576,7 +1576,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
     if (conf.enable_cycle_counting) {
         code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
 
-        patch_information[terminal.next].jg.push_back(code.getCurr());
+        PatchesFor(terminal.next).jg.push_back(code.getCurr());
         if (const auto next_bb = GetBasicBlock(terminal.next)) {
             EmitPatchJg(terminal.next, next_bb->entrypoint);
         } else {
@@ -1585,7 +1585,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
     } else {
         code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
 
-        patch_information[terminal.next].jz.push_back(code.getCurr());
+        PatchesFor(terminal.next).jz.push_back(code.getCurr());
         if (const auto next_bb = GetBasicBlock(terminal.next)) {
             EmitPatchJz(terminal.next, next_bb->entrypoint);
         } else {
@@ -1621,7 +1621,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::Location
     EmitHostExecutionBoundary(
         A32::LocationDescriptor{terminal.next}.PC());
 
-    patch_information[terminal.next].jmp.push_back(code.getCurr());
+    PatchesFor(terminal.next).jmp.push_back(code.getCurr());
     if (const auto next_bb = GetBasicBlock(terminal.next)) {
         EmitPatchJmp(terminal.next, next_bb->entrypoint);
     } else {
@@ -1643,7 +1643,7 @@ void A32EmitX64::EmitStableLink(
         code.jne(code.GetForceReturnFromRunCodeAddress());
     }
 
-    patch_information[target_desc].jmp.push_back(code.getCurr());
+    PatchesFor(target_desc).jmp.push_back(code.getCurr());
     if (const auto target = GetBasicBlock(target_desc)) {
         EmitPatchJmp(target_desc, target->entrypoint);
     } else {
@@ -1666,7 +1666,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
              loc_desc_reg);
 
     RecordNativeLink(NativeBlockLink::Kind::MovRcx, target);
-    patch_information[target].mov_rcx.push_back(code.getCurr());
+    PatchesFor(target).mov_rcx.push_back(code.getCurr());
     if (const auto target_block = GetBasicBlock(target)) {
         EmitPatchMovRcx(target_block->entrypoint);
     } else {

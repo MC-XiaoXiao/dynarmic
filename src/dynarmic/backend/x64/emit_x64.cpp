@@ -99,7 +99,7 @@ void EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, I
 
     code.mov(loc_desc_reg, target.Value());
 
-    patch_information[target].mov_rcx.push_back(code.getCurr());
+    PatchesFor(target).mov_rcx.push_back(code.getCurr());
     EmitPatchMovRcx(target_code_ptr);
 
     code.mov(qword[r15 + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_location_descriptors], loc_desc_reg);

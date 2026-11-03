@@ -112,8 +112,8 @@ protected:
     // Segment retirement is ordered by host entrypoint. Looking up one
     // allocation range is O(log N + retired) instead of rescanning every
     // descriptor whenever a bounded cache segment rotates.
-    std::map<const u8*, IR::LocationDescriptor, std::less<>>
-        blocks_by_entrypoint;
+    std::pmr::map<const u8*, IR::LocationDescriptor, std::less<>>
+        blocks_by_entrypoint{&metadata_storage};
     std::uint64_t retired_code_bytes{};
     std::shared_ptr<const A32NativeTemplateEnvironment> native_environment;
     std::shared_ptr<const A32::NativeCodeTemplate> produced_native_template;
