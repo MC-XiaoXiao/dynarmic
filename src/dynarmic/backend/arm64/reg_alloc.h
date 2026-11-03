@@ -334,7 +334,7 @@ private:
     std::array<HostLocInfo, 32> fprs;
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
-    size_t spill_count = 0;
+    u64 used_spills = 0;
     u64 used_registers = 0;
 
     void MarkValueDefined(const IR::Inst* inst) {
