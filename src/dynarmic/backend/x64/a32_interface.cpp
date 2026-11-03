@@ -249,7 +249,11 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     [[nodiscard]] A32EmitX64::RetiredCodeStats recycle_code_segment() {
         const auto victim = select_recycle_segment();
         auto& segment = code_segments[victim];
-        const auto retired = emitter->RetireCodeRange(segment.begin, segment.end);
+        // An unused segment has never published code or source patch sites.
+        // Reaching it for the first time needs no emitter-wide retirement pass.
+        const auto retired = segment.initialized
+                                 ? emitter->RetireCodeRange(segment.begin, segment.end)
+                                 : A32EmitX64::RetiredCodeStats{};
         live_allocated_code_bytes =
             segment.used_bytes > live_allocated_code_bytes
                 ? 0U
