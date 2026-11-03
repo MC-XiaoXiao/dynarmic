@@ -5,7 +5,9 @@
 
 #include "dynarmic/backend/block_range_information.h"
 
+#include <bit>
 #include <iterator>
+#include <vector>
 
 #include <boost/icl/interval_map.hpp>
 #include <boost/icl/interval_set.hpp>
@@ -78,17 +80,43 @@ void BlockRangeInformation<ProgramCounterType>::InvalidateLocations(
         insertion_hint.position.reset();
     }
     invalidated_descriptors += locations.size();
+    // Small guest writes use the reverse index. A segment retirement can
+    // remove a substantial fraction of the map; visit its interval nodes once
+    // instead of repeatedly searching the tree for each retired descriptor.
+    const bool bulk = locations.size() * std::bit_width(ranges_by_descriptor.size()) >
+                      block_ranges.iterative_size();
+    if (bulk) {
+        std::vector<std::pair<Interval, DescriptorSet>> partial;
+        boost::icl::erase_if([&](const auto& entry) {
+            DescriptorSet retired;
+            for (const auto& descriptor : entry.second) {
+                if (locations.contains(descriptor))
+                    retired.insert(descriptor);
+            }
+            if (retired.size() == entry.second.size())
+                return true;
+            if (!retired.empty())
+                partial.emplace_back(entry.first, std::move(retired));
+            return false;
+        }, block_ranges);
+        // ICL owns splitting and joining intervals with overlapping live
+        // descriptors. Apply these subtractions after the traversal ends.
+        for (const auto& entry : partial)
+            block_ranges.subtract(entry);
+    }
     for (const auto& descriptor : locations) {
         const auto descriptor_it = ranges_by_descriptor.find(descriptor);
         if (descriptor_it == ranges_by_descriptor.end()) {
             continue;
         }
 
-        descriptor_it->second.ForEach([&](const auto& descriptor_range) {
-            block_ranges.subtract(std::make_pair(
-                descriptor_range,
-                DescriptorSet{descriptor}));
-        });
+        if (!bulk) {
+            descriptor_it->second.ForEach([&](const auto& descriptor_range) {
+                block_ranges.subtract(std::make_pair(
+                    descriptor_range,
+                    DescriptorSet{descriptor}));
+            });
+        }
         range_count -= descriptor_it->second.Size();
         ranges_by_descriptor.erase(descriptor_it);
     }
