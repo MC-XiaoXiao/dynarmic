@@ -224,7 +224,6 @@ A32EmitX64::BlockDescriptor A32EmitX64::PublishBlock(IR::LocationDescriptor loca
     block_ranges.AddRange(range, descriptor);
 
     const auto registered = RegisterBlock(descriptor, entrypoint, size);
-    blocks_by_entrypoint.insert_or_assign(entrypoint, descriptor);
     return registered;
 }
 
@@ -287,7 +286,6 @@ void A32EmitX64::ClearCache() {
     produced_native_template.reset();
     EmitX64::ClearCache();
     block_ranges.ClearCache();
-    blocks_by_entrypoint.clear();
     retired_code_bytes = 0;
     ClearFastDispatchTable();
     fastmem_patch_info.clear();
@@ -299,8 +297,6 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
     for (const auto& location : locations) {
         if (const auto block = GetBasicBlock(location)) {
             retired_code_bytes += static_cast<std::uint64_t>(block->size);
-            blocks_by_entrypoint.erase(
-                reinterpret_cast<const u8*>(block->entrypoint));
         }
     }
     if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
@@ -326,7 +322,8 @@ tsl::robin_set<IR::LocationDescriptor> A32EmitX64::InvalidateCacheRanges(
 }
 
 A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
-    const void* begin, const void* end) {
+    const void* begin, const void* end,
+    std::span<const IR::LocationDescriptor> candidates) {
     const auto* const first = static_cast<const u8*>(begin);
     const auto* const last = static_cast<const u8*>(end);
     if (first == nullptr || last == nullptr || first >= last) {
@@ -335,15 +332,14 @@ A32EmitX64::RetiredCodeStats A32EmitX64::RetireCodeRange(
 
     tsl::robin_set<IR::LocationDescriptor> locations;
     std::uint64_t code_bytes{};
-    auto entrypoint = blocks_by_entrypoint.lower_bound(first);
-    while (entrypoint != blocks_by_entrypoint.end() &&
-           entrypoint->first < last) {
-        const auto location = entrypoint->second;
-        if (const auto block = GetBasicBlock(location)) {
+    // Range invalidation leaves the physical code in its segment. A descriptor
+    // may have been recompiled elsewhere since this candidate was appended.
+    for (const auto& location : candidates) {
+        const auto block = GetBasicBlock(location);
+        if (block && block->entrypoint >= first && block->entrypoint < last &&
+            locations.insert(location).second) {
             code_bytes += block->size;
         }
-        locations.insert(location);
-        entrypoint = blocks_by_entrypoint.erase(entrypoint);
     }
     block_ranges.InvalidateLocations(locations);
     code.EnableWriting();
@@ -583,18 +579,6 @@ void A32EmitX64::GenTerminalHandlers() {
         code.jne(code.GetForceReturnFromRunCodeAddress());
         code.jmp(rax);
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
-
-        code.align();
-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
-        code.mov(code.ABI_RETURN, code.ABI_PARAM1);
-        code.shr(code.ABI_RETURN, 32);
-        code.xor_(code.ABI_RETURN, code.ABI_PARAM1);
-        code.shl(code.ABI_RETURN, fast_dispatch_table_address_shift);
-        code.and_(code.ABI_RETURN.cvt32(), fast_dispatch_table_mask);
-        code.lea(code.ABI_RETURN,
-                 code.ptr[code.ABI_RETURN + code.ABI_PARAM2]);
-        code.ret();
-        PerfMapRegister(fast_dispatch_table_lookup, code.getCurr(), "a32_fast_dispatch_table_lookup");
     }
 }
 
@@ -1752,10 +1736,10 @@ bool A32EmitX64::ShouldPatchExistingBlocks() const {
 
 void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
-    if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.DisableWriting();
-        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table) = {};
-        code.EnableWriting();
+    if (!conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        // Linked tables belong to the executors and are invalidated together
+        // by NativeCodeSlab. The emitter's table is unused in that mode.
+        fast_dispatch_table[fast_dispatch_table_index(location.Value()) / sizeof(FastDispatchEntry)] = {};
     }
 }
 

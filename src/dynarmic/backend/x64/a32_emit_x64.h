@@ -6,10 +6,10 @@
 #pragma once
 
 #include <array>
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -74,8 +74,8 @@ public:
 
     tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(
         const boost::icl::interval_set<u32>& ranges);
-    RetiredCodeStats RetireCodeRange(
-        const void* begin, const void* end);
+    RetiredCodeStats RetireCodeRange(const void* begin, const void* end,
+        std::span<const IR::LocationDescriptor> candidates);
     void PatchPublishedTarget(
         const IR::LocationDescriptor& location, const void* entrypoint);
 
@@ -109,11 +109,6 @@ protected:
     const std::vector<HostLoc> gpr_order;
     A32::Jit* jit_interface;
     BlockRangeInformation<u32> block_ranges;
-    // Segment retirement is ordered by host entrypoint. Looking up one
-    // allocation range is O(log N + retired) instead of rescanning every
-    // descriptor whenever a bounded cache segment rotates.
-    std::pmr::map<const u8*, IR::LocationDescriptor, std::less<>>
-        blocks_by_entrypoint{&metadata_storage};
     std::uint64_t retired_code_bytes{};
     std::shared_ptr<const A32NativeTemplateEnvironment> native_environment;
     std::shared_ptr<const A32::NativeCodeTemplate> produced_native_template;
@@ -143,7 +138,6 @@ protected:
     const void* terminal_handler_pop_rsb_hint;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
     const void* terminal_handler_fast_dispatch_after_boundary = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
     void GenTerminalHandlers();
 
     // Microinstruction emitters
