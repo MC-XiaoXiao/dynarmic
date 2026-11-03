@@ -20,6 +20,9 @@ IR::Block TranslateA32IR(const A32::UserConfig& conf, IR::LocationDescriptor des
     }
     if (conf.HasOptimization(OptimizationFlag::ConstProp) &&
         (!conf.fast_compilation || ir_block.size() > A32::UserConfig::fast_compilation_max_unfolded_instructions)) {
+        // Get/set elimination can leave long identity chains. Flatten them
+        // before folding rewrites arguments and repeatedly resolves those chains.
+        Optimization::IdentityRemovalPass(ir_block);
         if (!conf.fast_compilation)
             Optimization::A32ConstantMemoryReads(ir_block, callbacks);
         Optimization::ConstantPropagation(ir_block);
