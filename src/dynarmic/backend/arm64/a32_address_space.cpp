@@ -341,6 +341,7 @@ tsl::robin_set<IR::LocationDescriptor> A32AddressSpace::InvalidateCacheRanges(co
 }
 
 void A32AddressSpace::ClearCache() {
+    ++code_storage_generation;
     AddressSpace::ClearCache();
     entries.clear();
     block_ranges.ClearCache();
@@ -732,7 +733,7 @@ A32::NativeCodeSlab::CacheStats A32AddressSpace::SharedCacheStats() const {
 A32::NativeCodeSlab::CodeRangeSnapshot A32AddressSpace::GetCodeRanges(size_t maximum_ranges) const {
     A32::NativeCodeSlab::CodeRangeSnapshot result;
     result.retains_invalidated = true;
-    result.storage_generation = GetCodeCacheGeneration();
+    result.storage_generation = code_storage_generation;
     result.total_ranges = block_infos.size() + entries.size() + 1;
     result.ranges.reserve(std::min(maximum_ranges, result.total_ranges));
     if (maximum_ranges == 0)

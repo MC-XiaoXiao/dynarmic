@@ -76,6 +76,9 @@ private:
         bool baseline{};
     };
     tsl::robin_map<IR::LocationDescriptor, Entry> entries;
+    // Range invalidation retires blocks without reusing their native storage.
+    // Only a full clear can rewind emission and invalidate address ownership.
+    u64 code_storage_generation{1};
     std::shared_ptr<const A32::NativeCodeTemplate> emitted_template;
     const A32::UserConfig* emission_source{};
     const void* (*shared_lookup)(void*){};
