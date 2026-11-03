@@ -270,13 +270,13 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
         code.SetCodePtr(entrypoint + link.offset);
         switch (link.kind) {
         case NativeBlockLink::Kind::Jg:
-            patches.jg.push_back(code.getCurr()); EmitPatchJg(target, pointer); break;
+            patches.Add(NativeBlockLink::Kind::Jg, code.getCurr()); EmitPatchJg(target, pointer); break;
         case NativeBlockLink::Kind::Jz:
-            patches.jz.push_back(code.getCurr()); EmitPatchJz(target, pointer); break;
+            patches.Add(NativeBlockLink::Kind::Jz, code.getCurr()); EmitPatchJz(target, pointer); break;
         case NativeBlockLink::Kind::Jmp:
-            patches.jmp.push_back(code.getCurr()); EmitPatchJmp(target, pointer); break;
+            patches.Add(NativeBlockLink::Kind::Jmp, code.getCurr()); EmitPatchJmp(target, pointer); break;
         case NativeBlockLink::Kind::MovRcx:
-            patches.mov_rcx.push_back(code.getCurr()); EmitPatchMovRcx(pointer); break;
+            patches.Add(NativeBlockLink::Kind::MovRcx, code.getCurr()); EmitPatchMovRcx(pointer); break;
         }
     }
     code.SetCodePtr(end);
@@ -385,17 +385,10 @@ void A32EmitX64::PatchPublishedTarget(
 }
 
 void A32EmitX64::ForgetPatchLocations(CodePtr first, CodePtr last) {
-    const auto retired = [first, last](CodePtr location) {
-        return location >= first && location < last;
-    };
     for (auto entry = patch_information.begin(); entry != patch_information.end();) {
-        auto& patches = entry->second;
-        std::erase_if(patches.jg, retired);
-        std::erase_if(patches.jz, retired);
-        std::erase_if(patches.jmp, retired);
-        std::erase_if(patches.mov_rcx, retired);
-        if (patches.jg.empty() && patches.jz.empty() && patches.jmp.empty() && patches.mov_rcx.empty()) {
-            entry = patch_information.erase(entry);
+        if (entry->second.ForgetSources(first, last)) {
+            const auto retired = entry++;
+            patch_information.erase(retired);
         } else {
             ++entry;
         }
@@ -1544,7 +1537,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
     if (conf.enable_cycle_counting) {
         code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
 
-        PatchesFor(terminal.next).jg.push_back(code.getCurr());
+        PatchesFor(terminal.next).Add(NativeBlockLink::Kind::Jg, code.getCurr());
         if (const auto next_bb = GetBasicBlock(terminal.next)) {
             EmitPatchJg(terminal.next, next_bb->entrypoint);
         } else {
@@ -1553,7 +1546,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
     } else {
         code.cmp(dword[r15 + offsetof(A32JitState, halt_reason)], 0);
 
-        PatchesFor(terminal.next).jz.push_back(code.getCurr());
+        PatchesFor(terminal.next).Add(NativeBlockLink::Kind::Jz, code.getCurr());
         if (const auto next_bb = GetBasicBlock(terminal.next)) {
             EmitPatchJz(terminal.next, next_bb->entrypoint);
         } else {
@@ -1589,7 +1582,7 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::Location
     EmitHostExecutionBoundary(
         A32::LocationDescriptor{terminal.next}.PC());
 
-    PatchesFor(terminal.next).jmp.push_back(code.getCurr());
+    PatchesFor(terminal.next).Add(NativeBlockLink::Kind::Jmp, code.getCurr());
     if (const auto next_bb = GetBasicBlock(terminal.next)) {
         EmitPatchJmp(terminal.next, next_bb->entrypoint);
     } else {
@@ -1611,7 +1604,7 @@ void A32EmitX64::EmitStableLink(
         code.jne(code.GetForceReturnFromRunCodeAddress());
     }
 
-    PatchesFor(target_desc).jmp.push_back(code.getCurr());
+    PatchesFor(target_desc).Add(NativeBlockLink::Kind::Jmp, code.getCurr());
     if (const auto target = GetBasicBlock(target_desc)) {
         EmitPatchJmp(target_desc, target->entrypoint);
     } else {
@@ -1634,7 +1627,7 @@ void A32EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg,
              loc_desc_reg);
 
     RecordNativeLink(NativeBlockLink::Kind::MovRcx, target);
-    PatchesFor(target).mov_rcx.push_back(code.getCurr());
+    PatchesFor(target).Add(NativeBlockLink::Kind::MovRcx, code.getCurr());
     if (const auto target_block = GetBasicBlock(target)) {
         EmitPatchMovRcx(target_block->entrypoint);
     } else {

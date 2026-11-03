@@ -99,7 +99,7 @@ void EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, I
 
     code.mov(loc_desc_reg, target.Value());
 
-    PatchesFor(target).mov_rcx.push_back(code.getCurr());
+    PatchesFor(target).Add(NativeBlockLink::Kind::MovRcx, code.getCurr());
     EmitPatchMovRcx(target_code_ptr);
 
     code.mov(qword[r15 + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_location_descriptors], loc_desc_reg);
@@ -380,26 +380,22 @@ void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_co
         return;
     }
     const CodePtr save_code_ptr = code.getCurr();
-    const PatchInformation& patch_info = patches->second;
-
-    for (CodePtr location : patch_info.jg) {
-        code.SetCodePtr(location);
-        EmitPatchJg(target_desc, target_code_ptr);
-    }
-
-    for (CodePtr location : patch_info.jz) {
-        code.SetCodePtr(location);
-        EmitPatchJz(target_desc, target_code_ptr);
-    }
-
-    for (CodePtr location : patch_info.jmp) {
-        code.SetCodePtr(location);
-        EmitPatchJmp(target_desc, target_code_ptr);
-    }
-
-    for (CodePtr location : patch_info.mov_rcx) {
-        code.SetCodePtr(location);
-        EmitPatchMovRcx(target_code_ptr);
+    for (const auto& site : patches->second.sites) {
+        code.SetCodePtr(site.location);
+        switch (site.kind) {
+        case NativeBlockLink::Kind::Jg:
+            EmitPatchJg(target_desc, target_code_ptr);
+            break;
+        case NativeBlockLink::Kind::Jz:
+            EmitPatchJz(target_desc, target_code_ptr);
+            break;
+        case NativeBlockLink::Kind::Jmp:
+            EmitPatchJmp(target_desc, target_code_ptr);
+            break;
+        case NativeBlockLink::Kind::MovRcx:
+            EmitPatchMovRcx(target_code_ptr);
+            break;
+        }
     }
 
     code.SetCodePtr(save_code_ptr);

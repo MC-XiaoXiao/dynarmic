@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <deque>
 #include <functional>
@@ -13,10 +14,11 @@
 #include <optional>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 
+#include <boost/container/small_vector.hpp>
 #include <mcl/bitsizeof.hpp>
+#include <mcl/container/ihmap.hpp>
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 #include <xbyak/xbyak.h>
@@ -24,6 +26,7 @@
 
 #include "dynarmic/backend/exception_handler.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
+#include "dynarmic/backend/x64/native_code_relocation.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/ir/location_descriptor.h"
 #include "dynarmic/ir/terminal.h"
@@ -139,12 +142,29 @@ protected:
 
     // Patching
     struct PatchInformation {
+        struct Site {
+            CodePtr location;
+            NativeBlockLink::Kind kind;
+        };
+        using Sites = boost::container::small_vector<Site, 1,
+            std::pmr::polymorphic_allocator<Site>>;
+
         explicit PatchInformation(std::pmr::memory_resource* storage)
-                : jg(storage), jz(storage), jmp(storage), mov_rcx(storage) {}
-        std::pmr::vector<CodePtr> jg;
-        std::pmr::vector<CodePtr> jz;
-        std::pmr::vector<CodePtr> jmp;
-        std::pmr::vector<CodePtr> mov_rcx;
+                : sites(typename Sites::allocator_type{
+                      std::pmr::polymorphic_allocator<Site>{storage}}) {}
+
+        void Add(NativeBlockLink::Kind kind, CodePtr location) {
+            sites.push_back({location, kind});
+        }
+        bool ForgetSources(CodePtr first, CodePtr last) {
+            sites.erase(std::remove_if(sites.begin(), sites.end(),
+                [first, last](const Site& site) {
+                    return site.location >= first && site.location < last;
+                }), sites.end());
+            return sites.empty();
+        }
+
+        Sites sites;
     };
     void Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
     virtual void Unpatch(const IR::LocationDescriptor& target_desc);
@@ -160,15 +180,15 @@ protected:
     // The slab mutex serializes emission and invalidation. Pool small metadata
     // allocations per emitter instead of contending with guest/host allocations
     // for every patch node and short vector during generation retirement.
-    std::pmr::unsynchronized_pool_resource metadata_storage{{64, 512}};
+    std::pmr::unsynchronized_pool_resource metadata_storage{{0, 512}};
 
     // State
     BlockOfCode& code;
     ExceptionHandler exception_handler;
     tsl::robin_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
-    // Patch records contain four vectors. Keep them in stable nodes so spare
-    // hash buckets and table growth do not duplicate these wide records.
-    std::pmr::unordered_map<IR::LocationDescriptor, PatchInformation> patch_information{&metadata_storage};
+    // Single-site targets and hash slots stay inline. PatchesFor references
+    // are consumed before another insertion; larger site lists use the pool.
+    mcl::ihmap<IR::LocationDescriptor, PatchInformation> patch_information;
 };
 
 }  // namespace Dynarmic::Backend::X64
