@@ -26,6 +26,7 @@ inline auto NativeTemplateConfiguration(const A32::UserConfig& conf) {
         conf.always_little_endian, conf.wall_clock_cntpct, bool(conf.page_table),
         bool(conf.read_page_table),
         bool(conf.page_table_link), bool(read_link),
+        conf.page_table_links_are_bound,
         read_table == conf.page_table && read_link == conf.page_table_link,
         conf.absolute_offset_page_table, conf.page_table_pointer_mask_bits,
         conf.detect_misaligned_access_via_page_table,

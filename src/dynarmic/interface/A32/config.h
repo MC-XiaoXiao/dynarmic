@@ -270,6 +270,10 @@ struct UserConfig {
     // table address as read_page_table and remains valid for the Jit lifetime.
     const std::atomic<std::uint64_t>* read_page_table_link = nullptr;
 
+    // Every supplied page-table link stays bound to a non-null table during
+    // execution. Individual null page entries still use memory callbacks.
+    bool page_table_links_are_bound = false;
+
     // Optional executor-owned indirection for non-null Coprocessor::Callback
     // user arguments. Clients must set this only when every such callback is
     // intentionally bound to the same linked object.

@@ -683,6 +683,7 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
                 ? conf.read_page_table_link
                 : conf.read_page_table == nullptr ? conf.page_table_link : nullptr),
         .read_page_table_in_register = !conf.fastmem_pointer.has_value(),
+        .page_table_links_are_bound = conf.page_table_links_are_bound,
         .page_table_address_space_bits = 32,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
         .silently_mirror_page_table = true,

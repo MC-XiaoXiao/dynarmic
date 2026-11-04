@@ -310,12 +310,14 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
         code.MOV(Xscratch1, link != 0 ? link : pointer);
         if (link != 0) {
             code.LDAR(Xscratch1, Xscratch1);
-            code.CBZ(Xscratch1, *fallback);
+            if (!ctx.conf.page_table_links_are_bound) {
+                code.CBZ(Xscratch1, *fallback);
+            }
         }
         code.LDR(Xscratch0, Xscratch1, Xscratch0, LSL, 3);
     } else {
         const auto base = read_table && !shared_table ? Xreadpagetable : Xpagetable;
-        if (link != 0) {
+        if (link != 0 && !ctx.conf.page_table_links_are_bound) {
             code.CBZ(base, *fallback);
         }
         code.LDR(Xscratch0, base, Xscratch0, LSL, 3);
