@@ -71,6 +71,14 @@ std::optional<std::tuple<size_t, size_t, size_t>> DecodeType(Imm<4> type, size_t
     }
     ASSERT_FALSE("Decode error");
 }
+
+// An explicitly D-register-aligned single structure has contiguous lanes.
+// Merge its little-endian elements through the existing 64-bit memory path;
+// each access stays within a page, preserving per-register fault prefixes.
+size_t TransferElementBytes(size_t nelem, size_t size, size_t alignment, bool big_endian) {
+    return nelem == 1 && alignment >= 8 && !big_endian ? 8 : static_cast<size_t>(1) << size;
+}
+
 }  // namespace
 
 bool TranslatorVisitor::v8_VST_multiple(bool D, Reg n, size_t Vd, Imm<4> type, size_t size, size_t align, Reg m) {
@@ -90,8 +98,8 @@ bool TranslatorVisitor::v8_VST_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
         return UnpredictableInstruction();
     }
 
-    [[maybe_unused]] const size_t alignment = align == 0 ? 1 : 4 << align;
-    const size_t ebytes = static_cast<size_t>(1) << size;
+    const size_t alignment = align == 0 ? 1 : 4 << align;
+    const size_t ebytes = TransferElementBytes(nelem, size, alignment, ir.current_location.EFlag());
     const size_t elements = 8 / ebytes;
 
     const bool wback = m != Reg::R15;
@@ -139,8 +147,8 @@ bool TranslatorVisitor::v8_VLD_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
         return UnpredictableInstruction();
     }
 
-    [[maybe_unused]] const size_t alignment = align == 0 ? 1 : 4 << align;
-    const size_t ebytes = static_cast<size_t>(1) << size;
+    const size_t alignment = align == 0 ? 1 : 4 << align;
+    const size_t ebytes = TransferElementBytes(nelem, size, alignment, ir.current_location.EFlag());
     const size_t elements = 8 / ebytes;
 
     const bool wback = m != Reg::R15;
