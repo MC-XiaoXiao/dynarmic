@@ -27,6 +27,11 @@ class FastmemManager;
 class FpsrManager;
 
 struct EmitContext {
+    struct DeferredVectorStore {
+        IR::Inst* read{};
+        u32 encoding{};
+    };
+
     IR::Block& block;
     RegAlloc& reg_alloc;
     const EmitConfig& conf;
@@ -34,6 +39,7 @@ struct EmitContext {
     FpsrManager& fpsr;
     FastmemManager& fastmem;
 
+    DeferredVectorStore deferred_vector_store;
     DeferredLabels labels;
     // Destroy callbacks before labels and their shared block-local resource.
     std::vector<boost::function<void()>> deferred_emits;

@@ -481,8 +481,17 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         code, ctx, Xaddr, fallback, true);
     EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
 
-    ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
+    u32 vector_store = 0;
+    if constexpr (bitsize == 8) {
+        if (ctx.deferred_vector_store.read == inst) {
+            vector_store = ctx.deferred_vector_store.encoding;
+            ctx.deferred_vector_store.read = nullptr;
+        }
+    }
+    ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, vector_store, fallback, end] {
         code.l(*fallback);
+        if (vector_store)
+            code.dw(vector_store);
         code.MOV(Xscratch0, Xaddr);
         EmitRelocation(code, ctx, WrappedReadMemoryLinkTarget(bitsize));
         if (ordered) {
