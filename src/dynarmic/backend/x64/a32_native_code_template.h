@@ -19,6 +19,7 @@ inline auto NativeTemplateConfiguration(const A32::UserConfig& conf) {
     return std::tuple{conf.arch_version,
                       conf.optimizations,
                       conf.fast_compilation,
+                      conf.maximum_block_instructions,
                       conf.unsafe_optimizations,
                       conf.define_unpredictable_behaviour,
                       conf.hook_hint_instructions,
