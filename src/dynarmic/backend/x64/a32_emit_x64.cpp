@@ -256,17 +256,18 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
         !captured->environment->Compatible(source, *native_environment) ||
         captured->bytes.empty() || code.SpaceRemaining() < 16 || captured->bytes.size() > code.SpaceRemaining() - 16)
         return {};
-    auto bytes = captured->bytes;
     code.EnableWriting();
     SCOPE_EXIT { code.DisableWriting(); };
     const auto* const saved = code.getCurr();
     code.align();
-    const auto* const entrypoint = code.getCurr();
-    if (!captured->relocations.Apply(code, bytes, entrypoint)) {
+    auto* const entrypoint = code.getCurr<u8*>();
+    // Relocate the unpublished destination directly; the immutable template
+    // remains reusable without a temporary allocation and second byte copy.
+    code.db(captured->bytes.data(), captured->bytes.size());
+    if (!captured->relocations.Apply(code, {entrypoint, captured->bytes.size()}, entrypoint)) {
         code.SetCodePtr(saved);
         return {};
     }
-    code.db(bytes.data(), bytes.size());
     const auto* const end = code.getCurr();
     for (const auto& link : captured->links) {
         const IR::LocationDescriptor target{link.descriptor};
@@ -286,7 +287,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
         }
     }
     code.SetCodePtr(end);
-    return PublishBlock(captured->location, captured->end_location, entrypoint, bytes.size(), code_segment);
+    return PublishBlock(captured->location, captured->end_location, entrypoint, captured->bytes.size(), code_segment);
 }
 
 void A32EmitX64::ClearCache() {
