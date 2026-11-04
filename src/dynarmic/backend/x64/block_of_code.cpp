@@ -309,6 +309,8 @@ void BlockOfCode::ForceReturnFromRunCode(bool mxcsr_already_exited) {
 
 void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     Xbyak::Label return_to_caller, return_to_caller_mxcsr_already_exited;
+    Xbyak::Label cycle_budget_exhausted, cycle_budget_exhausted_mxcsr_already_exited;
+    Xbyak::Label ticks_accounted;
 
     align();
     run_code = getCurr<RunCodeFuncType>();
@@ -367,7 +369,8 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     jne(return_to_caller, T_NEAR);
     if (cb.enable_cycle_counting) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
-        jng(return_to_caller, T_NEAR);
+        jng(cb.enable_cycle_budget_replenishment
+                ? cycle_budget_exhausted : return_to_caller, T_NEAR);
     }
     // Demand lookup may translate and allocate using host floating point.
     // Keep its exception flags and rounding separate from the guest state.
@@ -387,13 +390,37 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);
     if (cb.enable_cycle_counting) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
-        jng(return_to_caller_mxcsr_already_exited, T_NEAR);
+        jng(cb.enable_cycle_budget_replenishment
+                ? cycle_budget_exhausted_mxcsr_already_exited
+                : return_to_caller_mxcsr_already_exited, T_NEAR);
     }
     cb.LookupBlock->EmitCall(*this);
     cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);
     SwitchMxcsrOnEntry();
     jmp(ABI_RETURN);
+
+    if (cb.enable_cycle_counting && cb.enable_cycle_budget_replenishment) {
+        L(cycle_budget_exhausted);
+        SwitchMxcsrOnExit();
+        L(cycle_budget_exhausted_mxcsr_already_exited);
+        cb.AddTicks->EmitCall(*this, [this](RegList param) {
+            mov(param[0], qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
+            sub(param[0], qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
+        });
+        // AddTicks can request host cooperation. Do not replenish an expired
+        // host slice or any other asynchronous halt, and account it only once.
+        cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
+        jne(ticks_accounted, T_NEAR);
+        cb.GetTicksRemaining->EmitCall(*this);
+        test(ABI_RETURN, ABI_RETURN);
+        jz(ticks_accounted, T_NEAR);
+        mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], ABI_RETURN);
+        mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], ABI_RETURN);
+        // Keep the ABI frame and Guest state across periodic host probes.
+        // The ordinary dispatcher rechecks halts and restores Guest MXCSR.
+        jmp(return_from_run_code[MXCSR_ALREADY_EXITED]);
+    }
 
     align();
     return_from_run_code[FORCE_RETURN] = getCurr<const void*>();
@@ -412,6 +439,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
         });
     }
 
+    L(ticks_accounted);
     xor_(eax, eax);
     lock();
     xchg(dword[r15 + jsi.offsetof_halt_reason], eax);

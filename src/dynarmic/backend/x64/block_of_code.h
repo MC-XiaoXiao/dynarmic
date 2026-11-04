@@ -35,6 +35,7 @@ struct RunCodeCallbacks {
     std::unique_ptr<Callback> GetTicksRemaining;
     bool enable_cycle_counting;
     bool capture_native_references = false;
+    bool enable_cycle_budget_replenishment = false;
 };
 
 class BlockOfCode final : public Xbyak::CodeGenerator {

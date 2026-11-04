@@ -404,7 +404,7 @@ struct UserConfig {
     /// AddTicks and GetTicksRemaining are never called, and no cycle counting is done.
     bool enable_cycle_counting = true;
 
-    // ARM64 clients can supply successive cycle chunks without returning from
+    // Clients can supply successive cycle chunks without returning from
     // Run. AddTicks must retire each chunk; zero remaining or a halt ends Run.
     bool enable_cycle_budget_replenishment = false;
 

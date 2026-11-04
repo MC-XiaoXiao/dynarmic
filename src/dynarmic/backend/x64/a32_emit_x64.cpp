@@ -1570,7 +1570,11 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
 
     code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
     PushRSBHelper(rax, rbx, terminal.next);
-    code.ForceReturnFromRunCode();
+    if (conf.enable_cycle_counting && conf.enable_cycle_budget_replenishment) {
+        code.ReturnFromRunCode();
+    } else {
+        code.ForceReturnFromRunCode();
+    }
 }
 
 void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {

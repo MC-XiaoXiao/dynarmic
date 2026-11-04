@@ -69,6 +69,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
         GenRuntimeCallback<&A32::UserCallbacks::GetTicksRemaining>(cb, conf),
         conf.enable_cycle_counting,
         conf.enable_native_code_templates,
+        conf.enable_cycle_budget_replenishment,
     };
 }
 
@@ -273,7 +274,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     void initialize(A32::UserConfig config, A32::Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared) {
         std::lock_guard lock{mutex};
         if (initialized) {
-            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.fast_compilation != conf->fast_compilation || config.maximum_block_instructions != conf->maximum_block_instructions || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.enable_host_execution_block_budget != conf->enable_host_execution_block_budget || config.always_little_endian != conf->always_little_endian || bool(config.instruction_page_table) != bool(conf->instruction_page_table)) {
+            if (shared_mode != shared || config.code_cache_size != code_cache_size || config.arch_version != conf->arch_version || config.optimizations != conf->optimizations || config.fast_compilation != conf->fast_compilation || config.maximum_block_instructions != conf->maximum_block_instructions || config.unsafe_optimizations != conf->unsafe_optimizations || config.define_unpredictable_behaviour != conf->define_unpredictable_behaviour || config.hook_hint_instructions != conf->hook_hint_instructions || config.check_halt_on_memory_access != conf->check_halt_on_memory_access || config.enable_cycle_counting != conf->enable_cycle_counting || config.enable_cycle_budget_replenishment != conf->enable_cycle_budget_replenishment || config.enable_host_execution_block_budget != conf->enable_host_execution_block_budget || config.always_little_endian != conf->always_little_endian || bool(config.instruction_page_table) != bool(conf->instruction_page_table)) {
                 throw std::invalid_argument{
                     "native code slab configuration mismatch"};
             }
