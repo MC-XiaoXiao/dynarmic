@@ -180,8 +180,8 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     std::vector<Relocation>{}.swap(block_info.relocations);
     // The cache owns relocation metadata. Move it once instead of copying
     // its per-block containers into the index and back to the dispatcher.
-    const auto [block_iter, inserted] = block_infos.try_emplace(block_info.entry_point, std::move(block_info));
-    ASSERT(inserted);
+    // Native addresses increase here, as in the reverse index above.
+    const auto block_iter = block_infos.try_emplace(block_infos.end(), block_info.entry_point, std::move(block_info));
     const EmittedBlockInfo& cached_info = block_iter->second;
 
     if (!defer_block_linking)
