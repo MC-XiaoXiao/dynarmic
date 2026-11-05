@@ -94,6 +94,7 @@ public:
     static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
     static constexpr size_t fast_dispatch_table_size = 0x10000;
     static constexpr u32 fast_dispatch_table_address_shift = 2;
+    static constexpr u32 fast_dispatch_table_fold_shift = 16;
     // Keep the slot selection deterministic and independent of the
     // executor-local table address. Shared generated blocks can therefore
     // embed this slot offset and probe it without entering the full handler.
@@ -102,7 +103,11 @@ public:
     // mask so adjacent ARM basic blocks do not alias the same slot.
     [[nodiscard]] static constexpr u64 fast_dispatch_table_index(
         u64 location_descriptor) noexcept {
-        return ((location_descriptor ^ (location_descriptor >> 32U)) << fast_dispatch_table_address_shift) & fast_dispatch_table_mask;
+        const auto mixed = location_descriptor ^ (location_descriptor >> 32U);
+        // Fold the two low bits lost to entry alignment into the top slots.
+        // Thumb halfwords and ARM/Thumb mode then remain distinct; ordinary
+        // word-aligned ARM locations retain their existing slot selection.
+        return ((mixed ^ (mixed << fast_dispatch_table_fold_shift)) << fast_dispatch_table_address_shift) & fast_dispatch_table_mask;
     }
 
 protected:

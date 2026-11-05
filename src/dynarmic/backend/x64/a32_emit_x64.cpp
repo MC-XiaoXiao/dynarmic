@@ -593,6 +593,9 @@ void A32EmitX64::GenTerminalHandlers() {
         code.mov(rbp, rbx);
         code.shr(rbp, 32);
         code.xor_(rbp, rbx);
+        code.mov(rcx, rbp);
+        code.shl(rcx, fast_dispatch_table_fold_shift);
+        code.xor_(rbp, rcx);
         code.shl(rbp, fast_dispatch_table_address_shift);
         code.and_(ebp, fast_dispatch_table_mask);
         code.lea(rbp, ptr[r12 + rbp]);
