@@ -637,6 +637,9 @@ size_t Inst::NumArgs() const {
     return GetNumArgsOf(op);
 }
 
+#if __has_cpp_attribute(clang::always_inline)
+[[clang::always_inline]]
+#endif
 Value Inst::GetArg(size_t index) const {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::GetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
     ASSERT_MSG(!args[index].IsEmpty() || GetArgTypeOf(op, index) == IR::Type::Opaque, "Inst::GetArg: index {} is empty", index, args[index].GetType());
@@ -644,6 +647,9 @@ Value Inst::GetArg(size_t index) const {
     return args[index];
 }
 
+#if __has_cpp_attribute(clang::always_inline)
+[[clang::always_inline]]
+#endif
 const Value& Inst::GetArgRef(size_t index) const {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::GetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
     ASSERT_MSG(!args[index].IsEmpty() || GetArgTypeOf(op, index) == IR::Type::Opaque, "Inst::GetArg: index {} is empty", index, args[index].GetType());
