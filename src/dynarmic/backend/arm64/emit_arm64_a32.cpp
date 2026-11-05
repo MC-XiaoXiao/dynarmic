@@ -14,6 +14,7 @@
 #include "dynarmic/backend/arm64/reg_alloc.h"
 #include "dynarmic/frontend/A32/a32_types.h"
 #include "dynarmic/interface/halt_reason.h"
+#include "dynarmic/ir/acc_type.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/opcodes.h"
@@ -300,6 +301,44 @@ void EmitIR<IR::Opcode::A32SetExtendedRegister64>(oaknut::CodeGenerator& code, E
     code.STR(Dvalue, Xstate, offsetof(A32JitState, ext_regs) + 2 * sizeof(u32) * index);
 }
 
+static bool DeferVectorStore(EmitContext& ctx, IR::Inst* inst, oaknut::DReg value, size_t offset) {
+    if (ctx.conf.fastmem_pointer ||
+        (!ctx.conf.read_page_table_pointer && !ctx.conf.read_page_table_link_pointer)) {
+        return false;
+    }
+    auto next = std::next(IR::Block::iterator{inst});
+    if (next != ctx.block.end() && next->GetOpcode() == IR::Opcode::Add32)
+        ++next;
+    if (next == ctx.block.end() || next->GetOpcode() != IR::Opcode::A32ReadMemory8 ||
+        next->GetArg(2).GetAccType() != IR::AccType::NORMAL) {
+        return false;
+    }
+    auto* read = &*next++;
+    if (next == ctx.block.end() || next->GetOpcode() != IR::Opcode::VectorSetElement8 ||
+        next->GetArg(0).GetInst() != inst->GetArg(1).GetInst() ||
+        next->GetArg(2).IsImmediate() || next->GetArg(2).GetInst() != read) {
+        return false;
+    }
+    auto* replacement = &*next++;
+    if (next != ctx.block.end() && next->GetOpcode() == IR::Opcode::VectorZeroUpper &&
+        next->GetArg(0).GetInst() == replacement) {
+        replacement = &*next++;
+    }
+    if (next == ctx.block.end() || next->GetOpcode() != IR::Opcode::A32SetVector ||
+        next->GetArg(0).GetA32ExtRegRef() != inst->GetArg(0).GetA32ExtRegRef() ||
+        next->GetArg(1).GetInst() != replacement) {
+        return false;
+    }
+    // Only an integer address update precedes this byte read. The live vector
+    // parent remains in its FP register until the replacement after the read.
+    // RAM needs only the replacement store; callbacks observe the original one.
+    u32 encoding;
+    oaknut::CodeGenerator store{&encoding};
+    store.STR(value, Xstate, offset);
+    ctx.deferred_vector_store = EmitContext::DeferredVectorStore{read, encoding};
+    return true;
+}
+
 template<>
 void EmitIR<IR::Opcode::A32SetVector>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     const A32::ExtReg reg = inst->GetArg(0).GetA32ExtRegRef();
@@ -310,7 +349,9 @@ void EmitIR<IR::Opcode::A32SetVector>(oaknut::CodeGenerator& code, EmitContext& 
         const size_t index = static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::D0);
         auto Dvalue = ctx.reg_alloc.ReadD(args[1]);
         RegAlloc::Realize(Dvalue);
-        code.STR(Dvalue, Xstate, offsetof(A32JitState, ext_regs) + sizeof(u64) * index);
+        const auto offset = offsetof(A32JitState, ext_regs) + sizeof(u64) * index;
+        if (!DeferVectorStore(ctx, inst, *Dvalue, offset))
+            code.STR(Dvalue, Xstate, offset);
     } else {
         const size_t index = static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::Q0);
         auto Qvalue = ctx.reg_alloc.ReadQ(args[1]);

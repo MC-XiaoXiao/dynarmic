@@ -310,12 +310,14 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
         code.MOV(Xscratch1, link != 0 ? link : pointer);
         if (link != 0) {
             code.LDAR(Xscratch1, Xscratch1);
-            code.CBZ(Xscratch1, *fallback);
+            if (!ctx.conf.page_table_links_are_bound) {
+                code.CBZ(Xscratch1, *fallback);
+            }
         }
         code.LDR(Xscratch0, Xscratch1, Xscratch0, LSL, 3);
     } else {
         const auto base = read_table && !shared_table ? Xreadpagetable : Xpagetable;
-        if (link != 0) {
+        if (link != 0 && !ctx.conf.page_table_links_are_bound) {
             code.CBZ(base, *fallback);
         }
         code.LDR(Xscratch0, base, Xscratch0, LSL, 3);
@@ -479,8 +481,17 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         code, ctx, Xaddr, fallback, true);
     EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
 
-    ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
+    u32 vector_store = 0;
+    if constexpr (bitsize == 8) {
+        if (ctx.deferred_vector_store.read == inst) {
+            vector_store = ctx.deferred_vector_store.encoding;
+            ctx.deferred_vector_store.read = nullptr;
+        }
+    }
+    ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, vector_store, fallback, end] {
         code.l(*fallback);
+        if (vector_store)
+            code.dw(vector_store);
         code.MOV(Xscratch0, Xaddr);
         EmitRelocation(code, ctx, WrappedReadMemoryLinkTarget(bitsize));
         if (ordered) {
@@ -493,7 +504,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -539,7 +550,7 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -625,7 +636,7 @@ void FastmemEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::In
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }
@@ -680,7 +691,7 @@ void FastmemEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::I
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
         code.B(*end);
-    });
+    }, ctx.labels.Allocator());
 
     code.l(*end);
 }

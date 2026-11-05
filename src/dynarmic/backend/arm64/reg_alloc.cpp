@@ -223,16 +223,16 @@ void RegAlloc::DefineAsRegister(IR::Inst* inst, oaknut::Reg reg) {
 }
 
 void RegAlloc::UpdateAllUses() {
-    // A location never assigned in this block has no value uses to retire.
-    // Keep the set conservative across moves, aliases and register reuse.
-    for (u64 remaining = used_registers; remaining; remaining &= remaining - 1) {
+    // ValueInfo records locations touched by this instruction, including both
+    // ends of moves. Unchanged locations have no new uses to retire.
+    for (u64 remaining = std::exchange(used_registers, 0); remaining; remaining &= remaining - 1) {
         const auto index = static_cast<size_t>(std::countr_zero(remaining));
         auto& info = index < 32 ? gprs[index] : fprs[index - 32];
         info.UpdateUses();
     }
     flags.UpdateUses();
-    for (size_t i = 0; i < spill_count; ++i) {
-        spills[i].UpdateUses();
+    for (u64 remaining = std::exchange(used_spills, 0); remaining; remaining &= remaining - 1) {
+        spills[std::countr_zero(remaining)].UpdateUses();
     }
 }
 
@@ -533,7 +533,6 @@ int RegAlloc::FindFreeSpill() {
     const auto iter = std::find_if(spills.begin(), spills.end(), [](const HostLocInfo& info) { return info.values.empty(); });
     ASSERT_MSG(iter != spills.end(), "All spill locations are full");
     const auto index = static_cast<size_t>(iter - spills.begin());
-    spill_count = std::max(spill_count, index + 1);
     return static_cast<int>(index);
 }
 
@@ -623,6 +622,7 @@ HostLocInfo& RegAlloc::ValueInfo(HostLoc host_loc) {
     case HostLoc::Kind::Flags:
         return flags;
     case HostLoc::Kind::Spill:
+        used_spills |= u64{1} << host_loc.index;
         return spills[static_cast<size_t>(host_loc.index)];
     }
     ASSERT_FALSE("RegAlloc::ValueInfo: Invalid HostLoc::Kind");

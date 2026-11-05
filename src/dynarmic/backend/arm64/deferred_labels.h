@@ -19,11 +19,13 @@ namespace Dynarmic::Backend::Arm64 {
 class DeferredLabels {
 public:
     oaknut::Label* Create() {
-        if (!storage_) {
-            storage_.emplace();
-        }
-        storage_->labels.emplace_back();
-        return &storage_->labels.back();
+        auto& storage = GetStorage();
+        storage.labels.emplace_back();
+        return &storage.labels.back();
+    }
+
+    std::pmr::polymorphic_allocator<std::byte> Allocator() {
+        return std::pmr::polymorphic_allocator<std::byte>{&GetStorage().memory};
     }
 
 private:
@@ -35,6 +37,13 @@ private:
         std::pmr::monotonic_buffer_resource memory;
         std::pmr::list<oaknut::Label> labels;
     };
+
+    Storage& GetStorage() {
+        if (!storage_) {
+            storage_.emplace();
+        }
+        return *storage_;
+    }
 
     // Arithmetic-only blocks do not construct the resource or the list.
     std::optional<Storage> storage_;

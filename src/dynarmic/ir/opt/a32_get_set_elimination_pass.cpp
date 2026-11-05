@@ -194,10 +194,12 @@ void FlagsPass(IR::Block& block, bool preserve_state_at_memory_access) {
 
 void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
     using Iterator = IR::Block::iterator;
+    std::size_t memory_epoch{};
 
     struct RegInfo {
         IR::Value register_value;
-        std::optional<Iterator> last_set_instruction;
+        IR::Inst* last_set_instruction{};
+        std::size_t last_set_epoch{};
     };
     std::array<RegInfo, 15> reg_info;
 
@@ -209,13 +211,14 @@ void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
         get_inst->ReplaceUsesWith(info.register_value);
     };
 
-    const auto do_set = [](RegInfo& info, IR::Value value, Iterator set_inst) {
-        if (info.last_set_instruction) {
-            (*info.last_set_instruction)->Invalidate();
+    const auto do_set = [&memory_epoch](RegInfo& info, IR::Value value, Iterator set_inst) {
+        if (info.last_set_instruction && info.last_set_epoch == memory_epoch) {
+            info.last_set_instruction->Invalidate();
         }
         info = {
             .register_value = value,
-            .last_set_instruction = set_inst,
+            .last_set_instruction = &*set_inst,
+            .last_set_epoch = memory_epoch,
         };
     };
 
@@ -229,7 +232,8 @@ void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
     struct ExtRegInfo {
         ExtValueType value_type = {};
         IR::Value register_value;
-        std::optional<Iterator> last_set_instruction;
+        IR::Inst* last_set_instruction{};
+        std::size_t last_set_epoch{};
     };
     std::array<ExtRegInfo, 64> ext_reg_info;
 
@@ -239,7 +243,7 @@ void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
                 info.get() = {
                     .value_type = type,
                     .register_value = IR::Value(&*get_inst),
-                    .last_set_instruction = std::nullopt,
+                    .last_set_instruction = nullptr,
                 };
             }
             return;
@@ -247,17 +251,19 @@ void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
         get_inst->ReplaceUsesWith(std::data(infos)[0].get().register_value);
     };
 
-    const auto do_ext_set = [](ExtValueType type, std::initializer_list<std::reference_wrapper<ExtRegInfo>> infos, IR::Value value, Iterator set_inst) {
+    const auto do_ext_set = [&memory_epoch](ExtValueType type, std::initializer_list<std::reference_wrapper<ExtRegInfo>> infos, IR::Value value, Iterator set_inst) {
         if (std::all_of(infos.begin(), infos.end(), [type](const auto& info) { return info.get().value_type == type; })) {
-            if (std::data(infos)[0].get().last_set_instruction) {
-                (*std::data(infos)[0].get().last_set_instruction)->Invalidate();
+            const auto& first = std::data(infos)[0].get();
+            if (first.last_set_instruction && first.last_set_epoch == memory_epoch) {
+                first.last_set_instruction->Invalidate();
             }
         }
         for (auto& info : infos) {
             info.get() = {
                 .value_type = type,
                 .register_value = value,
-                .last_set_instruction = set_inst,
+                .last_set_instruction = &*set_inst,
+                .last_set_epoch = memory_epoch,
             };
         }
     };
@@ -267,15 +273,10 @@ void RegisterPass(IR::Block& block, bool preserve_state_at_memory_access) {
 
     for (auto inst = block.begin(); inst != block.end(); ++inst) {
         if (preserve_state_at_memory_access && inst->IsMemoryReadOrWrite()) {
-            // Preserve value forwarding on the ordinary mapped-memory path,
-            // while making the latest state store before this access
-            // ineligible for elimination by a later store. The backend's
-            // MemoryAbort side exit can then observe exact architectural state
-            // without forcing every post-access get to reload JIT state.
-            for (auto& info : reg_info)
-                info.last_set_instruction.reset();
-            for (auto& info : ext_reg_info)
-                info.last_set_instruction.reset();
+            // Keep forwarded values, but only eliminate state stores within
+            // the same memory epoch. Abort exits retain every pre-access
+            // publication without scanning all register slots at each access.
+            ++memory_epoch;
             continue;
         }
         switch (inst->GetOpcode()) {

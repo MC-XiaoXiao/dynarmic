@@ -157,7 +157,11 @@ bool TranslatorVisitor::v8_VLD_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
     for (size_t r = 0; r < regs; r++) {
         for (size_t i = 0; i < nelem; i++) {
             const ExtReg ext_reg = d + i * inc + r;
-            ir.SetExtendedRegister(ext_reg, ir.Imm64(0));
+            if (elements == 1) {
+                ir.SetExtendedRegister(ext_reg, ir.Imm64(0));
+            } else {
+                ir.SetVector(ext_reg, ir.ZeroVector());
+            }
         }
     }
 
@@ -165,11 +169,13 @@ bool TranslatorVisitor::v8_VLD_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
     for (size_t r = 0; r < regs; r++) {
         for (size_t e = 0; e < elements; e++) {
             for (size_t i = 0; i < nelem; i++) {
-                const IR::U64 element = ir.ZeroExtendToLong(ir.ReadMemory(ebytes * 8, address, IR::AccType::NORMAL));
-                const IR::U64 shifted_element = ir.LogicalShiftLeft(element, ir.Imm8(static_cast<u8>(e * ebytes * 8)));
-
+                const auto element = ir.ReadMemory(ebytes * 8, address, IR::AccType::NORMAL);
                 const ExtReg ext_reg = d + i * inc + r;
-                ir.SetExtendedRegister(ext_reg, ir.Or(ir.GetExtendedRegister(ext_reg), shifted_element));
+                if (elements == 1) {
+                    ir.SetExtendedRegister(ext_reg, IR::U64{element});
+                } else {
+                    ir.SetVector(ext_reg, ir.VectorSetElement(ebytes * 8, ir.GetVector(ext_reg), e, element));
+                }
 
                 address = ir.Add(address, ir.Imm32(static_cast<u32>(ebytes)));
             }

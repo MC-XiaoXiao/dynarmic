@@ -60,6 +60,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
                 config.wall_clock_cntpct != old.wall_clock_cntpct ||
                 bool(config.page_table) != bool(old.page_table) ||
                 bool(config.read_page_table) != bool(old.read_page_table) ||
+                config.page_table_links_are_bound != old.page_table_links_are_bound ||
                 config.absolute_offset_page_table != old.absolute_offset_page_table ||
                 config.page_table_pointer_mask_bits != old.page_table_pointer_mask_bits ||
                 config.detect_misaligned_access_via_page_table != old.detect_misaligned_access_via_page_table ||
