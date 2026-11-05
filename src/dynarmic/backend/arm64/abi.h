@@ -51,6 +51,9 @@ constexpr auto Rscratch1() {
 }
 
 constexpr int GPR_ORDER[]{19, 20, 21, 22, 23, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8};
+// A32 borrows the final allocation register for its write-through SP cache.
+constexpr oaknut::WReg Wguestsp{8};
+static_assert(GPR_ORDER[20] == 8);
 constexpr int FPR_ORDER[]{8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
 
 using RegisterList = u64;

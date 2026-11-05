@@ -43,6 +43,7 @@ void EmitIR<IR::Opcode::CallHostFunction>(oaknut::CodeGenerator& code, EmitConte
     ctx.reg_alloc.PrepareForCall(args[1], args[2], args[3]);
     code.MOV(Xscratch0, args[0].GetImmediateU64());
     code.BLR(Xscratch0);
+    EmitReloadCachedRegisters(code, ctx);
 }
 
 template<>
@@ -204,7 +205,10 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const 
     Optimization::NamingPass(block);
     const size_t instruction_count = block.empty() ? 1 : static_cast<size_t>(block.back().GetName()) + 1;
     FpsrManager fpsr_manager{code, conf.state_fpsr_offset};
-    RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER, instruction_count};
+    std::span<const int> gprs{GPR_ORDER};
+    if (conf.a32_sp_in_register)
+        gprs = gprs.first(gprs.size() - 1);
+    RegAlloc reg_alloc{code, fpsr_manager, gprs, FPR_ORDER, instruction_count};
     EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}, {}};
 
     ebi.entry_point = code.xptr<CodePtr>();
@@ -279,6 +283,13 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const 
 void EmitRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, LinkTarget link_target) {
     ctx.ebi.relocations.emplace_back(Relocation{code.xptr<CodePtr>() - ctx.ebi.entry_point, link_target});
     code.NOP();
+    if (link_target != LinkTarget::ReturnToDispatcher && link_target != LinkTarget::ReturnFromRunCode)
+        EmitReloadCachedRegisters(code, ctx);
+}
+
+void EmitReloadCachedRegisters(oaknut::CodeGenerator& code, const EmitContext& ctx) {
+    if (ctx.conf.a32_sp_in_register)
+        EmitA32ReloadStackPointer(code);
 }
 
 void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, const IR::LocationDescriptor& descriptor, BlockRelocationType type) {

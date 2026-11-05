@@ -176,6 +176,7 @@ struct EmitConfig {
     std::array<std::shared_ptr<A32::Coprocessor>, 16> coprocessors{};
     bool coprocessor_user_arg_linked = false;
     bool shared_native_code = false;
+    bool a32_sp_in_register = false;
 
     // Debugging
     bool very_verbose_debugging_output;
@@ -186,6 +187,8 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const 
 template<IR::Opcode op>
 void EmitIR(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
 void EmitRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, LinkTarget link_target);
+void EmitReloadCachedRegisters(oaknut::CodeGenerator& code, const EmitContext& ctx);
+void EmitA32ReloadStackPointer(oaknut::CodeGenerator& code);
 void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, const IR::LocationDescriptor& descriptor, BlockRelocationType type);
 oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Cond cond);
 oaknut::Label EmitA64Cond(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Cond cond);

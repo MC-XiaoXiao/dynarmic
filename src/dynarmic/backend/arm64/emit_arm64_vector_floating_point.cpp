@@ -278,6 +278,7 @@ static void EmitTwoOpFallbackWithoutRegAlloc(oaknut::CodeGenerator& code, EmitCo
     code.LDR(Qresult, SP);
 
     ABI_PopRegisters(code, ABI_CALLER_SAVE & ~(1ull << Qresult.index()), stack_size);
+    EmitReloadCachedRegisters(code, ctx);
 }
 
 template<size_t fpcr_controlled_arg_index = 1, typename Lambda>

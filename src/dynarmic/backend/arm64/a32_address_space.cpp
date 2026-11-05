@@ -417,6 +417,7 @@ void A32AddressSpace::EmitPrelude() {
         code.LDAR(Wscratch0, Xhalt);
         code.CBNZ(Wscratch0, return_from_run_code);
 
+        EmitA32ReloadStackPointer(code);
         code.BR(X19);
     }
 
@@ -455,6 +456,7 @@ void A32AddressSpace::EmitPrelude() {
         code.STLXR(Wscratch1, Wscratch0, Xhalt);
         code.CBNZ(Wscratch1, step_hr_loop);
 
+        EmitA32ReloadStackPointer(code);
         code.BR(X19);
     }
 
@@ -503,6 +505,7 @@ void A32AddressSpace::EmitPrelude() {
         code.MOV(X2, SP);
         code.LDR(Xscratch0, l_addr);
         code.BLR(Xscratch0);
+        EmitA32ReloadStackPointer(code);
         // Compilation callbacks can request a stop before entering guest code.
         code.LDAR(Wscratch0, Xhalt);
         code.CBNZ(Wscratch0, return_from_run_code);
@@ -541,6 +544,7 @@ void A32AddressSpace::EmitPrelude() {
             code.STR(Xticks, SP, offsetof(StackLayout, cycles_to_run));
             // The dispatcher checks asynchronous halts again before entry.
             // Keep the ABI frame, Guest FPCR and RSB across clock probes.
+            EmitA32ReloadStackPointer(code);
             code.B(prelude_info.return_to_dispatcher);
             code.l(finish);
         }
@@ -714,6 +718,7 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .coprocessors = emission_source ? emission_source->coprocessors : conf.coprocessors,
         .coprocessor_user_arg_linked = conf.coprocessor_user_arg_link != nullptr,
         .shared_native_code = emission_source != nullptr,
+        .a32_sp_in_register = true,
 
         .very_verbose_debugging_output = conf.very_verbose_debugging_output,
     };
