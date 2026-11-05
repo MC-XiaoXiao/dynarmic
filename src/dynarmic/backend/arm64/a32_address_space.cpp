@@ -478,9 +478,9 @@ void A32AddressSpace::EmitPrelude() {
             // Hits stay in generated code; collisions use the normal compiler.
             static_assert(offsetof(A32JitState, regs) + 16 * sizeof(u32) == offsetof(A32JitState, upper_location_descriptor));
             code.LDUR(Xscratch0, Xstate, offsetof(A32JitState, regs) + 15 * sizeof(u32));
-            code.LSR(Xscratch1, Xscratch0, 2);
-            code.EOR(Xscratch1, Xscratch1, Xscratch0, LSR, 32);
-            code.AND(Xscratch1, Xscratch1, FastDispatchCache::index_mask);
+            code.EOR(Xscratch1, Xscratch0, Xscratch0, LSR, 30);
+            code.EOR(Xscratch1, Xscratch1, Xscratch0, LSL, FastDispatchCache::index_bits);
+            code.UBFX(Xscratch1, Xscratch1, 2, FastDispatchCache::index_bits);
             if (conf.fast_dispatch_table_link) {
                 code.LDR(Xscratch2, Xstate, offsetof(A32JitState, fast_dispatch_table_link));
                 code.LDAR(Xscratch2, Xscratch2);
