@@ -12,6 +12,7 @@
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
+#include <mcl/hash/xmrx.hpp>
 #include <mcl/stdint.hpp>
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
@@ -111,11 +112,16 @@ protected:
         CodePtr entry_point;
         std::span<const BlockRelocation> relocations;
     };
+    struct DescriptorHash {
+        size_t operator()(IR::LocationDescriptor descriptor) const noexcept {
+            return mcl::hash::xmrx(descriptor.Value());
+        }
+    };
     // Relocation buffers are immutable and owned by block_infos (or its shared
     // templates) until ClearCache, including sources invalidated in between.
     // Moving the metadata index preserves these separately allocated buffers.
     // Index them directly so patching does not search both source indexes again.
-    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>> block_references;
+    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>, DescriptorHash> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

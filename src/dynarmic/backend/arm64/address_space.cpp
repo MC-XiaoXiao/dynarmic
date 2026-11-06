@@ -28,6 +28,9 @@ AddressSpace::AddressSpace(size_t code_cache_size)
         , mem(code_cache_size)
         , code(mem.ptr(), mem.ptr())
         , fastmem_manager(exception_handler) {
+    // Mixed descriptor bits keep this large metadata index compact without
+    // clustering aligned guest addresses in the power-of-two bucket table.
+    block_references.max_load_factor(0.8f);
     ASSERT_MSG(code_cache_size <= 128 * 1024 * 1024, "code_cache_size > 128 MiB not currently supported");
 
     exception_handler.Register(mem, code_cache_size);
