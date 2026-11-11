@@ -193,12 +193,14 @@ static void EmitAddCycles(oaknut::CodeGenerator& code, EmitContext& ctx, size_t 
     }
 }
 
-EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const EmitConfig& conf, FastmemManager& fastmem_manager) {
+EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const EmitConfig& conf, FastmemManager& fastmem_manager,
+                          std::vector<Relocation> relocations) {
     if (conf.very_verbose_debugging_output) {
         std::puts(IR::DumpBlock(block).c_str());
     }
 
     EmittedBlockInfo ebi;
+    ebi.relocations = std::move(relocations);
 
     // Blocks from either frontend (or imported IR) may have gained new values
     // during optimization; define a unique dense index for every emitted value.

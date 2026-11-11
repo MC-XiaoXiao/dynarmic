@@ -637,7 +637,9 @@ std::shared_ptr<const A32::NativeCodeTemplate> A32AddressSpace::BuildTemplate(IR
     emission_source = &source;
     SCOPE_EXIT { emission_source = nullptr; };
     UnprotectCodeMemory();
-    auto info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
+    auto info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager,
+                          std::move(emission_relocations));
+    SCOPE_EXIT { RecycleEmissionRelocations(info.relocations); };
     if (!A32NativeCodeTemplate::Eligible(source, block, info))
         return {};
     return std::make_shared<const A32NativeCodeTemplate>(source, block, info);

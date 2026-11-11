@@ -86,6 +86,7 @@ protected:
     const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                        std::span<const Relocation> fixed_relocations = {});
     void Link(const EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
+    void RecycleEmissionRelocations(std::vector<Relocation>& relocations);
     template<bool Synchronize = false>
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, std::span<const BlockRelocation> block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
@@ -106,6 +107,7 @@ protected:
     oaknut::CodeBlock mem;
     oaknut::CodeGenerator code;
     std::unique_ptr<u32[]> emission_buffer;
+    std::vector<Relocation> emission_relocations;
     ColdCodeLayout cold_code;
 
     // A IR::LocationDescriptor will have one current CodePtr.

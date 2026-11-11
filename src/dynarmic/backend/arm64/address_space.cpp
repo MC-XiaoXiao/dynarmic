@@ -267,7 +267,8 @@ const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
 
     oaknut::CodeGenerator scratch{emission_buffer.get(), emission_buffer.get()};
     auto& emitter = code_segments.empty() ? code : scratch;
-    EmittedBlockInfo block_info = EmitArm64(emitter, block, GetEmitConfig(), fastmem_manager);
+    EmittedBlockInfo block_info = EmitArm64(emitter, block, GetEmitConfig(), fastmem_manager,
+                                           std::move(emission_relocations));
     CaptureEmittedBlock(block, block_info);
     if (!code_segments.empty())
         PlaceBlock(block_info, block_info.entry_point);
@@ -289,7 +290,7 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     Link(block_info, fixed_relocations.empty() ? std::span<const Relocation>{block_info.relocations} : fixed_relocations);
     // Prelude callback targets are fixed after initial linking. Retain only
     // block links and fastmem sites, which are needed for later patching.
-    std::vector<Relocation>{}.swap(block_info.relocations);
+    RecycleEmissionRelocations(block_info.relocations);
     // The cache owns relocation metadata. Move it once instead of copying
     // its per-block containers into the index and back to the dispatcher.
     // Native addresses increase here, as in the reverse index above.
@@ -321,6 +322,15 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     ProtectCodeMemory();
 
     return cached_info;
+}
+
+void AddressSpace::RecycleEmissionRelocations(std::vector<Relocation>& relocations) {
+    // Fixed offsets are temporary. Reuse one workspace instead of retaining
+    // capacity in each published block; templates already own their copy.
+    relocations.clear();
+    if (relocations.capacity() > emission_relocations.capacity())
+        emission_relocations.swap(relocations);
+    std::vector<Relocation>{}.swap(relocations);
 }
 
 void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relocation> fixed_relocations) {
