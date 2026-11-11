@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <initializer_list>
 
 #include <mcl/container/intrusive_list.hpp>
 #include <mcl/stdint.hpp>
@@ -27,6 +28,8 @@ class Inst final : public mcl::intrusive_list_node<Inst> {
 public:
     explicit Inst(Opcode op)
             : op(op) {}
+
+    Inst(Opcode op, std::initializer_list<Value> initial_args);
 
     /// Determines whether or not this instruction performs an arithmetic shift.
     bool IsArithmeticShift() const;
