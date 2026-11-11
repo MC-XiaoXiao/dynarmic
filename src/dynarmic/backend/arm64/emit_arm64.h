@@ -83,11 +83,14 @@ enum class LinkTarget {
     GetCNTPCT,
     AddTicks,
     GetTicksRemaining,
+    BlockConditionalBranch,
+    BlockBranch,
 };
 
 struct Relocation {
     std::ptrdiff_t code_offset;
     LinkTarget target;
+    u32 block_offset{};
 };
 
 enum class BlockRelocationType {
@@ -103,6 +106,12 @@ struct BlockRelocation {
 struct EmittedBlockInfo {
     CodePtr entry_point;
     size_t size;
+    u32 hot_size{};
+    u32 cold_offset{};
+    CodePtr CodeAddress(std::ptrdiff_t offset) const {
+        return entry_point + (cold_offset && offset >= hot_size
+            ? cold_offset + offset - hot_size : offset);
+    }
     std::vector<Relocation> relocations;
     // Each block has few link targets and fastmem sites. Flat maps avoid
     // embedding two hash-table control structures in every cached block.
@@ -188,6 +197,9 @@ template<IR::Opcode op>
 void EmitIR(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
 void EmitRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, LinkTarget link_target);
 void EmitReloadCachedRegisters(oaknut::CodeGenerator& code, const EmitContext& ctx);
+void BindColdLabel(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::Label& label);
+void RecordBlockBranch(oaknut::CodeGenerator& code, EmitContext& ctx,
+                       const oaknut::Label& target, LinkTarget type);
 void EmitA32ReloadStackPointer(oaknut::CodeGenerator& code);
 void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, const IR::LocationDescriptor& descriptor, BlockRelocationType type);
 oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Cond cond);

@@ -19,6 +19,7 @@
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
+#include "dynarmic/backend/arm64/cold_code_layout.h"
 #include "dynarmic/backend/arm64/emit_arm64.h"
 #include "dynarmic/backend/arm64/fast_dispatch.h"
 #include "dynarmic/backend/arm64/fastmem.h"
@@ -91,6 +92,8 @@ protected:
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void PublishBranch(CodePtr patch, CodePtr target);
     void EnableSegmentedCache();
+    void ResetColdCodeLayout();
+    void PlaceBlock(EmittedBlockInfo& info, const void* canonical_code);
     void RetireCodeIndex(std::size_t segment,
                          const tsl::robin_set<IR::LocationDescriptor>& locations);
 
@@ -102,6 +105,8 @@ protected:
     std::unique_ptr<FastDispatchCache> fast_dispatch_cache;
     oaknut::CodeBlock mem;
     oaknut::CodeGenerator code;
+    std::unique_ptr<u32[]> emission_buffer;
+    ColdCodeLayout cold_code;
 
     // A IR::LocationDescriptor will have one current CodePtr.
     // However, there can be multiple other CodePtrs which are older, previously invalidated blocks.
@@ -109,6 +114,12 @@ protected:
     struct CodeIndex {
         boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
         boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
+        struct ColdOwner {
+            u32 offset;
+            u32 block_index;
+        };
+        // Each chunk's cold addresses descend in publication order.
+        std::vector<std::vector<ColdOwner>> cold_owners;
     };
     // Each physical segment appends independently after the code ring wraps.
     // Retirement releases only that segment's packed metadata.

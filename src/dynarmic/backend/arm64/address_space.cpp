@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <functional>
 
 #include <mcl/bit_cast.hpp>
@@ -56,11 +57,12 @@ const AddressSpace::CodeIndex* AddressSpace::FindCodeIndex(CodePtr address) cons
 }
 
 std::optional<IR::LocationDescriptor> AddressSpace::ReverseGetLocation(CodePtr host_pc) {
-    const auto* index = FindCodeIndex(host_pc);
+    const auto entry = ReverseGetEntryPoint(host_pc);
+    const auto* index = FindCodeIndex(entry);
     if (index) {
-        auto it = index->reverse_block_entries.upper_bound(host_pc);
-        if (it != index->reverse_block_entries.begin())
-            return std::prev(it)->second;
+        const auto it = index->reverse_block_entries.find(entry);
+        if (it != index->reverse_block_entries.end())
+            return it->second;
     }
     return std::nullopt;
 }
@@ -68,6 +70,22 @@ std::optional<IR::LocationDescriptor> AddressSpace::ReverseGetLocation(CodePtr h
 CodePtr AddressSpace::ReverseGetEntryPoint(CodePtr host_pc) {
     const auto* index = FindCodeIndex(host_pc);
     if (index) {
+        if (!code_segments.empty()) {
+            const auto segment = *code_segment_index(host_pc);
+            const auto offset = static_cast<size_t>(host_pc - code_segments[segment].begin);
+            const auto chunk = offset / ColdCodeLayout::chunk_bytes;
+            if (chunk < index->cold_owners.size()) {
+                const auto& owners = index->cold_owners[chunk];
+                const auto within = static_cast<u32>(offset % ColdCodeLayout::chunk_bytes);
+                const auto found = std::lower_bound(owners.begin(), owners.end(), within,
+                    [](const auto& owner, u32 value) { return owner.offset > value; });
+                if (found != owners.end()) {
+                    const auto block = index->block_infos.begin() + found->block_index;
+                    if (within - found->offset < block->second.size - block->second.hot_size)
+                        return block->first;
+                }
+            }
+        }
         auto it = index->reverse_block_entries.upper_bound(host_pc);
         if (it != index->reverse_block_entries.begin())
             return std::prev(it)->first;
@@ -145,11 +163,44 @@ void AddressSpace::ClearCache() {
     reset_code_segments();
     block_references.clear();
     code.set_offset(prelude_info.end_of_prelude);
+    if (!code_segments.empty())
+        ResetColdCodeLayout();
 }
 
 void AddressSpace::EnableSegmentedCache() {
+    code.align(16);
+    prelude_info.end_of_prelude = code.offset();
     initialize_code_segments(code.xptr<CodePtr>(), GetRemainingSize());
     code_indexes.resize(code_segments.size());
+    emission_buffer = std::make_unique_for_overwrite<u32[]>(code_cache_size / sizeof(u32));
+    ResetColdCodeLayout();
+}
+
+void AddressSpace::ResetColdCodeLayout() {
+    const auto& segment = code_segments[current_segment];
+    cold_code.Reset(segment.begin, segment.end);
+}
+
+void AddressSpace::PlaceBlock(EmittedBlockInfo& info, const void* canonical_code) {
+    if (code_segments.empty()) {
+        info.entry_point = code.xptr<CodePtr>();
+        std::memcpy(info.entry_point, canonical_code, info.size);
+        code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
+        return;
+    }
+    // Keep large canonical images contiguous; splitting uses imm19 branches.
+    const auto hot_size = info.size + sizeof(u32) > ColdCodeLayout::chunk_bytes
+        ? info.size : (info.hot_size ? info.hot_size : info.size);
+    const auto cold_size = info.size - hot_size;
+    const auto placement = cold_code.Allocate(hot_size, cold_size);
+    info.entry_point = placement.hot;
+    info.hot_size = static_cast<u32>(hot_size);
+    info.cold_offset = cold_size ? static_cast<u32>(placement.cold - placement.hot) : 0;
+    const auto* bytes = static_cast<const std::byte*>(canonical_code);
+    std::memcpy(placement.hot, bytes, hot_size);
+    if (cold_size)
+        std::memcpy(placement.cold, bytes + hot_size, cold_size);
+    code.set_xptr(reinterpret_cast<u32*>(placement.hot + hot_size));
 }
 
 void AddressSpace::RetireCodeIndex(
@@ -200,7 +251,7 @@ size_t AddressSpace::GetCodeCacheUsed() const {
 
 size_t AddressSpace::GetRemainingSize() {
     return code_segments.empty() ? code_cache_size - static_cast<size_t>(code.offset())
-                                : active_segment_space_remaining(code.xptr<CodePtr>());
+                                : cold_code.Remaining();
 }
 
 void AddressSpace::EnsureEmissionSpace() {
@@ -214,8 +265,12 @@ const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
 
     UnprotectCodeMemory();
 
-    EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
+    oaknut::CodeGenerator scratch{emission_buffer.get(), emission_buffer.get()};
+    auto& emitter = code_segments.empty() ? code : scratch;
+    EmittedBlockInfo block_info = EmitArm64(emitter, block, GetEmitConfig(), fastmem_manager);
     CaptureEmittedBlock(block, block_info);
+    if (!code_segments.empty())
+        PlaceBlock(block_info, block_info.entry_point);
     const auto& cached_info = PublishBlock(block.Location(), std::move(block_info));
     RegisterNewBasicBlock(block, cached_info);
     return cached_info;
@@ -240,14 +295,27 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     // Native addresses increase here, as in the reverse index above.
     const auto block_iter = block_infos.try_emplace(block_infos.end(), block_info.entry_point, std::move(block_info));
     const EmittedBlockInfo& cached_info = block_iter->second;
+    if (cached_info.cold_offset) {
+        const auto offset = static_cast<size_t>(cached_info.CodeAddress(cached_info.hot_size) -
+                                              code_segments[current_segment].begin);
+        const auto chunk = offset / ColdCodeLayout::chunk_bytes;
+        index.cold_owners.resize(std::max(index.cold_owners.size(), chunk + 1));
+        index.cold_owners[chunk].push_back({static_cast<u32>(offset % ColdCodeLayout::chunk_bytes),
+            static_cast<u32>(block_infos.size() - 1)});
+    }
 
     if (!defer_block_linking)
         RelinkForDescriptor(location, Get(location));
 
-    mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), cached_info.size);
+    const auto hot_size = cached_info.cold_offset ? cached_info.hot_size : cached_info.size;
+    mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), hot_size);
+    if (cached_info.cold_offset)
+        mem.invalidate(reinterpret_cast<u32*>(cached_info.CodeAddress(cached_info.hot_size)),
+                       cached_info.size - cached_info.hot_size);
     FinishEntryPublication(location, cached_info.entry_point);
     if (!code_segments.empty()) {
-        update_active_segment_usage(code.xptr<CodePtr>());
+        cold_code.CommitHot(code.xptr<CodePtr>());
+        update_active_segment_usage(cold_code.UsedEnd());
         touch_code_segment(cached_info.entry_point);
     }
     ProtectCodeMemory();
@@ -259,11 +327,20 @@ void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relo
     using namespace oaknut;
     using namespace oaknut::util;
 
-    for (auto [ptr_offset, target] : fixed_relocations) {
+    for (auto [ptr_offset, target, block_offset] : fixed_relocations) {
         CodeGenerator c{mem.ptr(), mem.ptr()};
-        c.set_xptr(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset));
+        c.set_xptr(reinterpret_cast<u32*>(block_info.CodeAddress(ptr_offset)));
 
         switch (target) {
+        case LinkTarget::BlockConditionalBranch: {
+            const auto displacement = block_info.CodeAddress(block_offset) - block_info.CodeAddress(ptr_offset);
+            const auto word = *c.wptr<u32*>();
+            c.dw((word & 0xff00001fU) | ((static_cast<u32>(displacement / 4) & 0x7ffffU) << 5));
+            break;
+        }
+        case LinkTarget::BlockBranch:
+            c.B(static_cast<const void*>(block_info.CodeAddress(block_offset)));
+            break;
         case LinkTarget::ReturnToDispatcher:
             c.B(prelude_info.return_to_dispatcher);
             break;

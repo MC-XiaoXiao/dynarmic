@@ -271,12 +271,17 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block& block, const 
     conf.emit_terminal(code, ctx);
     code.BRK(0);
 
+    if (conf.shared_native_code)
+        ebi.hot_size = static_cast<u32>(code.xptr<CodePtr>() - ebi.entry_point);
+
     for (const auto& deferred_emit : ctx.deferred_emits) {
         deferred_emit();
     }
     code.BRK(0);
 
     ebi.size = code.xptr<CodePtr>() - ebi.entry_point;
+    if (conf.shared_native_code && ctx.deferred_emits.empty())
+        ebi.hot_size = static_cast<u32>(ebi.size);
     return ebi;
 }
 
@@ -290,6 +295,29 @@ void EmitRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, LinkTarget li
 void EmitReloadCachedRegisters(oaknut::CodeGenerator& code, const EmitContext& ctx) {
     if (ctx.conf.a32_sp_in_register)
         EmitA32ReloadStackPointer(code);
+}
+
+void BindColdLabel(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::Label& label) {
+    if (ctx.conf.shared_native_code) {
+        const auto block_begin = code.offset() - (code.xptr<CodePtr>() - ctx.ebi.entry_point);
+        const auto target = static_cast<u32>(code.xptr<CodePtr>() - ctx.ebi.entry_point);
+        label.visit_references([&](std::ptrdiff_t source) {
+            // Page-table fallback references are CBZ/CBNZ or B.cond (imm19).
+            ctx.ebi.relocations.push_back({source - block_begin,
+                LinkTarget::BlockConditionalBranch, target});
+        });
+    }
+    code.l(label);
+}
+
+void RecordBlockBranch(oaknut::CodeGenerator& code, EmitContext& ctx,
+                       const oaknut::Label& target, LinkTarget type) {
+    if (ctx.conf.shared_native_code && ctx.ebi.hot_size != 0) {
+        const auto source = code.xptr<CodePtr>() - ctx.ebi.entry_point;
+        const auto block_begin = code.offset() - source;
+        ctx.ebi.relocations.push_back({source, type,
+            static_cast<u32>(target.offset() - block_begin)});
+    }
 }
 
 void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, const IR::LocationDescriptor& descriptor, BlockRelocationType type) {

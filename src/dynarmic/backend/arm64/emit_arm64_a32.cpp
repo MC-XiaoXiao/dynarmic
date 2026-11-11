@@ -178,6 +178,7 @@ void EmitA32CheckMemoryAbort(oaknut::CodeGenerator& code, EmitContext& ctx, IR::
     // halt_reason is a u32; an X-register acquire load also requires 8-byte alignment.
     code.LDAR(Wscratch0, Xhalt);
     code.TST(Wscratch0, static_cast<u32>(HaltReason::MemoryAbort));
+    RecordBlockBranch(code, ctx, end, LinkTarget::BlockConditionalBranch);
     code.B(EQ, end);
     EmitSetUpperLocationDescriptor(code, ctx, current_location, ctx.block.Location());
     code.MOV(Wscratch0, current_location.PC());

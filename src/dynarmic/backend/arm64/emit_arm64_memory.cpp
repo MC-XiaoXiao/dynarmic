@@ -489,7 +489,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         }
     }
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, vector_store, fallback, end] {
-        code.l(*fallback);
+        BindColdLabel(code, ctx, *fallback);
         if (vector_store)
             code.dw(vector_store);
         code.MOV(Xscratch0, Xaddr);
@@ -503,6 +503,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
             EmitMemoryCallbackResult<bitsize>(code, Rvalue.toX(), Xscratch0);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
+        RecordBlockBranch(code, ctx, *end, LinkTarget::BlockBranch);
         code.B(*end);
     }, ctx.labels.Allocator());
 
@@ -533,7 +534,7 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
     EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
 
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
-        code.l(*fallback);
+        BindColdLabel(code, ctx, *fallback);
         if constexpr (bitsize == 128) {
             code.MOV(Xscratch0, Xaddr);
             code.MOV(Q0.B16(), Rvalue.B16());
@@ -549,6 +550,7 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
             code.DMB(oaknut::BarrierOp::ISH);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
+        RecordBlockBranch(code, ctx, *end, LinkTarget::BlockBranch);
         code.B(*end);
     }, ctx.labels.Allocator());
 

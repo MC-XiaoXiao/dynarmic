@@ -389,6 +389,7 @@ A32AddressSpace::RetiredCodeStats A32AddressSpace::RecycleCodeSegment() {
     }
     activate_code_segment(victim);
     code.set_xptr(reinterpret_cast<u32*>(segment.begin));
+    ResetColdCodeLayout();
     return {locations.size(), used};
 }
 
@@ -696,11 +697,10 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     // Relocation offsets are immutable; only the emitted instructions change.
     // Retain the map independently of the template and its native words.
     EmittedBlockInfo info{};
-    info.entry_point = code.xptr<CodePtr>();
     info.size = native_template->info.size;
+    info.hot_size = native_template->info.hot_size;
     info.shared_block_relocations = native_template->info.shared_block_relocations;
-    std::memcpy(info.entry_point, native_template->words.data(), info.size);
-    code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
+    PlaceBlock(info, native_template->words.data());
     const auto& emitted = PublishBlock(native_template->location, std::move(info), native_template->info.relocations);
     const A32::LocationDescriptor start{native_template->location};
     const A32::LocationDescriptor end{native_template->end_location};
@@ -787,8 +787,11 @@ A32::NativeCodeSlab::CodeRangeSnapshot A32AddressSpace::GetCodeRanges(size_t max
     result.retains_invalidated = true;
     result.storage_generation = code_storage_generation;
     result.total_ranges = entries.size() + 1;
-    for (const auto& index : code_indexes)
+    for (const auto& index : code_indexes) {
         result.total_ranges += index.block_infos.size();
+        for (const auto& chunk : index.cold_owners)
+            result.total_ranges += chunk.size();
+    }
     result.ranges.reserve(std::min(maximum_ranges, result.total_ranges));
     if (maximum_ranges == 0)
         return result;
@@ -800,7 +803,11 @@ A32::NativeCodeSlab::CodeRangeSnapshot A32AddressSpace::GetCodeRanges(size_t max
             if (result.ranges.size() == maximum_ranges)
                 break;
             ASSERT(descriptor != index.reverse_block_entries.end() && descriptor->first == entrypoint);
-            result.ranges.push_back({descriptor->second.Value(), reinterpret_cast<std::uintptr_t>(entrypoint), info.size});
+            result.ranges.push_back({descriptor->second.Value(), reinterpret_cast<std::uintptr_t>(entrypoint),
+                info.cold_offset ? info.hot_size : info.size});
+            if (info.cold_offset && result.ranges.size() != maximum_ranges)
+                result.ranges.push_back({descriptor->second.Value(),
+                    reinterpret_cast<std::uintptr_t>(info.CodeAddress(info.hot_size)), info.size - info.hot_size});
             ++descriptor;
         }
     }
