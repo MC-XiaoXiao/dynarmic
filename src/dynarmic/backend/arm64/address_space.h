@@ -22,6 +22,7 @@
 #include "dynarmic/backend/arm64/emit_arm64.h"
 #include "dynarmic/backend/arm64/fast_dispatch.h"
 #include "dynarmic/backend/arm64/fastmem.h"
+#include "dynarmic/backend/native_code_segments.h"
 #include "dynarmic/interface/halt_reason.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
@@ -30,14 +31,14 @@ namespace Dynarmic::Backend::Arm64 {
 
 struct StackLayout;
 
-class AddressSpace {
+class AddressSpace : protected NativeCodeSegments<std::byte> {
 public:
     explicit AddressSpace(size_t code_cache_size);
     virtual ~AddressSpace();
 
     virtual IR::Block GenerateIR(IR::LocationDescriptor) const = 0;
 
-    CodePtr Get(IR::LocationDescriptor descriptor);
+    CodePtr Get(IR::LocationDescriptor descriptor) const;
 
     // Returns "most likely" LocationDescriptor assocated with the emitted code at that location
     std::optional<IR::LocationDescriptor> ReverseGetLocation(CodePtr host_pc);
@@ -89,6 +90,9 @@ protected:
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void PublishBranch(CodePtr patch, CodePtr target);
+    void EnableSegmentedCache();
+    void RetireCodeIndex(std::size_t segment,
+                         const tsl::robin_set<IR::LocationDescriptor>& locations);
 
     FakeCall FastmemCallback(u64 host_pc);
 
@@ -102,12 +106,14 @@ protected:
     // A IR::LocationDescriptor will have one current CodePtr.
     // However, there can be multiple other CodePtrs which are older, previously invalidated blocks.
     tsl::robin_map<IR::LocationDescriptor, CodePtr> block_entries;
-    // Native addresses increase until a full clear. Keep reverse lookups
-    // contiguous instead of allocating a tree node for every compiled block.
-    boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
-    // Native entries are appended in address order within each generation.
-    // A packed index avoids empty hash buckets carrying full block metadata.
-    boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
+    struct CodeIndex {
+        boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
+        boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
+    };
+    // Each physical segment appends independently after the code ring wraps.
+    // Retirement releases only that segment's packed metadata.
+    std::vector<CodeIndex> code_indexes{1};
+    const CodeIndex* FindCodeIndex(CodePtr address) const;
     struct BlockReference {
         CodePtr entry_point;
         std::span<const BlockRelocation> relocations;

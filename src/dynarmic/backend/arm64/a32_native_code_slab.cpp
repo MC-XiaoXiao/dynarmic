@@ -79,6 +79,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         }
         config.native_code_slab = nullptr;
         emitter = std::make_unique<A32AddressSpace>(config, lookup, lookup_arg);
+        emitter->EnableSegmentedCache();
         callback_bindings = bindings;
         conf = std::move(config);
         initialized = true;
@@ -89,6 +90,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (!initialized || clear_pending || !pending_ranges.empty() || expected != current_generation)
             return false;
         if (auto ptr = emitter->Get(IR::LocationDescriptor{descriptor})) {
+            emitter->TouchBlock(IR::LocationDescriptor{descriptor}, ptr);
             result = {ptr, 0, current_generation, false, {}, emitter->IsBaseline(IR::LocationDescriptor{descriptor})};
             return true;
         }
@@ -100,13 +102,16 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (clear_pending || !pending_ranges.empty() || expected != current_generation ||
             (expected_revision && expected_revision != publication_revision.load(std::memory_order_acquire)))
             return {};
-        if (auto ptr = emitter->Get(block.Location()))
+        if (auto ptr = emitter->Get(block.Location())) {
+            emitter->TouchBlock(block.Location(), ptr);
             return {ptr, 0, current_generation, false};
+        }
         if (emitter->SpaceRemaining() < 1024U * 1024U) {
             request_generation_transition(GenerationTransitionKind::RecycleSegment);
             return {};
         }
         const auto& emitted = emitter->EmitShared(block, source ? *source : *conf);
+        emitter->TouchBlock(block.Location(), static_cast<CodePtr>(const_cast<void*>(emitted.entrypoint)));
         // EmitShared synchronizes the new target before any incoming branch
         // can expose it to another active executor. Keep address loads deferred.
         if (active_executions != 0)
@@ -125,8 +130,10 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         const auto previous = emitter->Get(location);
         const bool upgrade = previous && source.tiered_compilation &&
             emitter->IsBaseline(location) && !native_template.IsBaseline();
-        if (previous && !upgrade)
+        if (previous && !upgrade) {
+            emitter->TouchBlock(location, previous);
             return {previous, 0, current_generation, false};
+        }
         if (emitter->SpaceRemaining() < 1024U * 1024U) {
             if (upgrade)
                 return {};
@@ -136,6 +143,7 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         const auto emitted = emitter->ImportTemplate(native_template, source);
         if (!emitted.entrypoint)
             return {};
+        emitter->TouchBlock(location, static_cast<CodePtr>(const_cast<void*>(emitted.entrypoint)));
         if (!upgrade) {
             if (active_executions != 0)
                 emitter->PublishBranchLinks(location);
@@ -173,20 +181,29 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         if (active_executions != 0)
             return;
         if (clear_pending) {
-            const auto stats = emitter->SharedCacheStats();
-            const auto used = emitter->GetCodeCacheUsed();
-            if (pending_transition == GenerationTransitionKind::RecycleSegment) {
-                ++segment_recycles;
-                recycled_descriptors += stats.descriptor_count;
-                recycled_code_bytes += used;
-            } else {
+            if (pending_transition == GenerationTransitionKind::ClearAll) {
                 ++full_generation_clears;
+                clear_executor_tables();
+                emitter->ClearCache();
+                pending_direct_link_targets.clear();
+                current_generation = pending_generation;
+                published_generation.store(current_generation, std::memory_order_release);
+            } else {
+                if (!pending_ranges.empty()) {
+                    emitter->InvalidateCacheRanges(pending_ranges);
+                    clear_executor_tables();
+                }
+                const auto retired = emitter->RecycleCodeSegment();
+                ++segment_recycles;
+                recycled_descriptors += retired.descriptors;
+                recycled_code_bytes += retired.code_bytes;
+                // Entering unused storage keeps every published pointer valid.
+                if (retired.code_bytes != 0U) {
+                    clear_executor_tables();
+                    current_generation = pending_generation;
+                    published_generation.store(current_generation, std::memory_order_release);
+                }
             }
-            clear_executor_tables();
-            emitter->ClearCache();
-            pending_direct_link_targets.clear();
-            current_generation = pending_generation;
-            published_generation.store(current_generation, std::memory_order_release);
             pending_ranges.clear();
             clear_pending = false;
             generation_changed.notify_all();

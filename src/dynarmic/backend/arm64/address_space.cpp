@@ -41,27 +41,36 @@ AddressSpace::AddressSpace(size_t code_cache_size)
 
 AddressSpace::~AddressSpace() = default;
 
-CodePtr AddressSpace::Get(IR::LocationDescriptor descriptor) {
+CodePtr AddressSpace::Get(IR::LocationDescriptor descriptor) const {
     if (const auto iter = block_entries.find(descriptor); iter != block_entries.end()) {
         return iter->second;
     }
     return nullptr;
 }
 
+const AddressSpace::CodeIndex* AddressSpace::FindCodeIndex(CodePtr address) const {
+    if (code_segments.empty())
+        return &code_indexes.front();
+    const auto segment = code_segment_index(address);
+    return segment ? &code_indexes[*segment] : nullptr;
+}
+
 std::optional<IR::LocationDescriptor> AddressSpace::ReverseGetLocation(CodePtr host_pc) {
-    if (auto iter = reverse_block_entries.upper_bound(host_pc); iter != reverse_block_entries.begin()) {
-        // upper_bound locates the first value greater than host_pc, so we need to decrement
-        --iter;
-        return iter->second;
+    const auto* index = FindCodeIndex(host_pc);
+    if (index) {
+        auto it = index->reverse_block_entries.upper_bound(host_pc);
+        if (it != index->reverse_block_entries.begin())
+            return std::prev(it)->second;
     }
     return std::nullopt;
 }
 
 CodePtr AddressSpace::ReverseGetEntryPoint(CodePtr host_pc) {
-    if (auto iter = reverse_block_entries.upper_bound(host_pc); iter != reverse_block_entries.begin()) {
-        // upper_bound locates the first value greater than host_pc, so we need to decrement
-        --iter;
-        return iter->first;
+    const auto* index = FindCodeIndex(host_pc);
+    if (index) {
+        auto it = index->reverse_block_entries.upper_bound(host_pc);
+        if (it != index->reverse_block_entries.begin())
+            return std::prev(it)->first;
     }
     return nullptr;
 }
@@ -131,25 +140,67 @@ void AddressSpace::ClearCache() {
         fast_dispatch_cache->Clear();
     }
     block_entries.clear();
-    // Clearing a cache releases the reverse index, including its capacity.
-    decltype(reverse_block_entries){}.swap(reverse_block_entries);
-    decltype(block_infos){}.swap(block_infos);
+    for (auto& index : code_indexes)
+        index = {};
+    reset_code_segments();
     block_references.clear();
     code.set_offset(prelude_info.end_of_prelude);
 }
 
+void AddressSpace::EnableSegmentedCache() {
+    initialize_code_segments(code.xptr<CodePtr>(), GetRemainingSize());
+    code_indexes.resize(code_segments.size());
+}
+
+void AddressSpace::RetireCodeIndex(
+        std::size_t segment, const tsl::robin_set<IR::LocationDescriptor>& locations) {
+    ++cache_generation;
+    if (fast_dispatch_cache)
+        fast_dispatch_cache->Clear();
+    const auto& retired = code_segments[segment];
+    // Remove sources before destroying their immutable relocation buffers.
+    // Incoming references from surviving segments remain available for relinking.
+    for (auto it = block_references.begin(); it != block_references.end();) {
+        auto& references = it.value();
+        references.erase(std::remove_if(references.begin(), references.end(),
+            [&](const BlockReference& source) {
+                return source.entry_point >= retired.begin && source.entry_point < retired.end;
+            }), references.end());
+        if (references.empty())
+            it = block_references.erase(it);
+        else
+            ++it;
+    }
+    for (auto location : locations) {
+        RelinkForDescriptor(location, nullptr);
+        block_entries.erase(location);
+    }
+    code_indexes[segment] = {};
+}
+
 void AddressSpace::DumpDisassembly() const {
-    for (u32* ptr = mem.ptr(); ptr < code.xptr<u32*>(); ptr++) {
-        std::printf("%s", Common::DisassembleAArch64(*ptr, mcl::bit_cast<u64>(ptr)).c_str());
+    const auto dump = [](u32* begin, u32* end) {
+        for (auto* ptr = begin; ptr < end; ++ptr)
+            std::printf("%s", Common::DisassembleAArch64(*ptr, mcl::bit_cast<u64>(ptr)).c_str());
+    };
+    if (code_segments.empty()) {
+        dump(mem.ptr(), code.xptr<u32*>());
+    } else {
+        dump(mem.ptr(), mem.ptr() + prelude_info.end_of_prelude / sizeof(u32));
+        for (const auto& segment : code_segments)
+            dump(reinterpret_cast<u32*>(segment.begin),
+                 reinterpret_cast<u32*>(segment.begin + segment.used_bytes));
     }
 }
 
 size_t AddressSpace::GetCodeCacheUsed() const {
-    return static_cast<size_t>(code.offset());
+    return code_segments.empty() ? static_cast<size_t>(code.offset())
+                                : prelude_info.end_of_prelude + live_allocated_code_bytes;
 }
 
 size_t AddressSpace::GetRemainingSize() {
-    return code_cache_size - static_cast<size_t>(code.offset());
+    return code_segments.empty() ? code_cache_size - static_cast<size_t>(code.offset())
+                                : active_segment_space_remaining(code.xptr<CodePtr>());
 }
 
 void AddressSpace::EnsureEmissionSpace() {
@@ -173,6 +224,9 @@ const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
 const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                                   std::span<const Relocation> fixed_relocations) {
     block_entries.insert_or_assign(location, PublishEntry(location, block_info.entry_point));
+    auto& index = code_indexes[current_segment];
+    auto& reverse_block_entries = index.reverse_block_entries;
+    auto& block_infos = index.block_infos;
     ASSERT(reverse_block_entries.empty() ||
            std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
     reverse_block_entries.emplace_hint(reverse_block_entries.end(),
@@ -192,6 +246,10 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
 
     mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), cached_info.size);
     FinishEntryPublication(location, cached_info.entry_point);
+    if (!code_segments.empty()) {
+        update_active_segment_usage(code.xptr<CodePtr>());
+        touch_code_segment(cached_info.entry_point);
+    }
     ProtectCodeMemory();
 
     return cached_info;
@@ -443,6 +501,7 @@ FakeCall AddressSpace::FastmemCallback(u64 host_pc) {
             goto fail;
         }
 
+        const auto& block_infos = FindCodeIndex(entry_point)->block_infos;
         const auto block_info = block_infos.find(entry_point);
         if (block_info == block_infos.end()) {
             goto fail;
