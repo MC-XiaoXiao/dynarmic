@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
+#include <boost/container/static_vector.hpp>
 
 #include <mcl/assert.hpp>
 #include <mcl/stdint.hpp>
@@ -333,7 +334,8 @@ private:
     std::array<HostLocInfo, 32> gprs;
     std::array<HostLocInfo, 32> fprs;
     HostLocInfo flags;
-    std::array<HostLocInfo, SpillCount> spills;
+    // Construct metadata only when a fixed spill slot is first used.
+    boost::container::static_vector<HostLocInfo, SpillCount> spills;
     u64 used_spills = 0;
     u64 used_registers = 0;
 

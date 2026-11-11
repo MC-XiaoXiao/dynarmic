@@ -531,8 +531,11 @@ void RegAlloc::SpillFlags() {
 
 int RegAlloc::FindFreeSpill() {
     const auto iter = std::find_if(spills.begin(), spills.end(), [](const HostLocInfo& info) { return info.values.empty(); });
-    ASSERT_MSG(iter != spills.end(), "All spill locations are full");
     const auto index = static_cast<size_t>(iter - spills.begin());
+    if (iter == spills.end()) {
+        ASSERT_MSG(index < SpillCount, "All spill locations are full");
+        spills.emplace_back();
+    }
     return static_cast<int>(index);
 }
 
