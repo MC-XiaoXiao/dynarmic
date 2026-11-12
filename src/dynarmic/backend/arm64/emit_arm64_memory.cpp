@@ -246,7 +246,7 @@ constexpr size_t page_bits = 12;
 constexpr size_t page_size = 1 << page_bits;
 constexpr size_t page_mask = (1 << page_bits) - 1;
 
-// This function may use Xscratch0 as a scratch register
+// This function may use Xscratch1 as a scratch register
 // Trashes NZCV
 template<size_t bitsize>
 void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const IR::Value& vaddr, oaknut::Label* fallback) {
@@ -287,8 +287,8 @@ void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oa
         code.B(NE, *fallback);
     } else {
         // If (addr & page_mask) > page_size - byte_size, use fallback.
-        code.AND(Xscratch0, Xaddr, page_mask);
-        code.CMP(Xscratch0, page_size - bitsize / 8);
+        code.AND(Xscratch1, Xaddr, page_mask);
+        code.CMP(Xscratch1, page_size - bitsize / 8);
         code.B(HI, *fallback);
     }
 }
@@ -301,8 +301,6 @@ template<size_t bitsize>
 std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const IR::Value& vaddr, oaknut::Label* fallback, bool read_table) {
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
-
-    EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, vaddr, fallback);
 
     if (ctx.conf.silently_mirror_page_table || unused_top_bits == 0) {
         code.UBFX(Xscratch0, Xaddr, page_bits, valid_page_index_bits);
@@ -333,6 +331,9 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
         }
         code.LDR(Xscratch0, base, Xscratch0, LSL, 3);
     }
+
+    // Alignment work can overlap the independent, bounds-checked table load.
+    EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, vaddr, fallback);
 
     if (ctx.conf.page_table_pointer_mask_bits != 0) {
         const u64 mask = u64(~u64(0)) << ctx.conf.page_table_pointer_mask_bits;
