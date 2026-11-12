@@ -355,7 +355,7 @@ EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& de
     }
 
     BlockDescriptor block_desc{entrypoint, size};
-    block_descriptors.insert({IR::LocationDescriptor{descriptor.Value()}, block_desc});
+    block_descriptors.try_emplace(descriptor, block_desc);
     return block_desc;
 }
 

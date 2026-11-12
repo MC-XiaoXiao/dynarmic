@@ -15,6 +15,7 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/icl/interval_map.hpp>
 #include <boost/icl/interval_set.hpp>
+#include <mcl/container/ihmap.hpp>
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
@@ -99,7 +100,7 @@ private:
         }
     };
     InsertionHint insertion_hint;
-    tsl::robin_map<IR::LocationDescriptor, DescriptorRanges> ranges_by_descriptor;
+    mcl::ihmap<IR::LocationDescriptor, DescriptorRanges> ranges_by_descriptor;
     std::size_t range_count{};
     std::uint64_t invalidated_descriptors{};
 };

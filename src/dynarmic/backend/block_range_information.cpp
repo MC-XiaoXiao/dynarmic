@@ -30,7 +30,7 @@ void BlockRangeInformation<ProgramCounterType>::AddRange(boost::icl::discrete_in
     }
 
     auto [descriptor_it, inserted] = ranges_by_descriptor.try_emplace(location, range);
-    auto& descriptor_ranges = descriptor_it.value();
+    auto& descriptor_ranges = descriptor_it->second;
     if (inserted) {
         range_count += descriptor_ranges.Size();
         return;
@@ -50,7 +50,8 @@ void BlockRangeInformation<ProgramCounterType>::ClearCache() {
     insertion_hint.position.reset();
     block_ranges.clear();
     // A full cache release must also return the hash table's bucket storage.
-    decltype(ranges_by_descriptor){}.swap(ranges_by_descriptor);
+    ranges_by_descriptor.clear();
+    ranges_by_descriptor = {};
     range_count = 0;
 }
 

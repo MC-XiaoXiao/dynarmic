@@ -186,7 +186,7 @@ protected:
     // State
     BlockOfCode& code;
     ExceptionHandler exception_handler;
-    tsl::robin_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
+    mcl::ihmap<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
     // Single-site targets and hash slots stay inline. PatchesFor references
     // are consumed before another insertion; larger site lists use the pool.
     mcl::ihmap<IR::LocationDescriptor, PatchInformation> patch_information;
