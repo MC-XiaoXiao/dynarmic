@@ -7,6 +7,7 @@
 #include "dynarmic/backend/x64/a32_native_code_template.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -263,7 +264,10 @@ A32EmitX64::BlockDescriptor A32EmitX64::ImportTemplate(
     auto* const entrypoint = code.getCurr<u8*>();
     // Relocate the unpublished destination directly; the immutable template
     // remains reusable without a temporary allocation and second byte copy.
-    code.db(captured->bytes.data(), captured->bytes.size());
+    // The capacity check includes alignment and the template owns disjoint
+    // storage, so this copy needs neither byte-wise growth nor overlap handling.
+    std::memcpy(entrypoint, captured->bytes.data(), captured->bytes.size());
+    code.SetCodePtr(entrypoint + captured->bytes.size());
     if (!captured->relocations.Apply(code, {entrypoint, captured->bytes.size()}, entrypoint)) {
         code.SetCodePtr(saved);
         return {};
