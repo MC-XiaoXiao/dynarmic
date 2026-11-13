@@ -146,13 +146,13 @@ struct HostLocInfo final {
     size_t accumulated_uses = 0;
     size_t expected_uses = 0;
 
-    bool Contains(const IR::Inst*) const;
+    void ClearValues(std::span<HostLoc>);
     void SetupScratchLocation();
-    void SetupLocation(const IR::Inst*);
+    void SetupLocation(const IR::Inst*, std::span<HostLoc>);
     bool IsCompletelyEmpty() const;
     bool MaybeAllocatable() const;
     bool IsOneRemainingUse() const;
-    void UpdateUses();
+    void UpdateUses(std::span<HostLoc>);
 };
 
 class RegAlloc final {
