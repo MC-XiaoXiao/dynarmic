@@ -14,6 +14,21 @@
 
 namespace Dynarmic::IR {
 
+Inst::Inst(Opcode op, std::initializer_list<Value> initial_args)
+        : op(op) {
+    ASSERT(initial_args.size() == NumArgs());
+    size_t index = 0;
+    for (const auto& value : initial_args) {
+        const Type arg_type = GetArgTypeOf(op, index);
+        const Type value_type = value.GetType();
+        ASSERT_MSG(AreTypesCompatible(value_type, arg_type), "Inst::SetArg: type {} of argument {} not compatible with operation {} ({})", value_type, index, op, arg_type);
+        if (!value.IsImmediate()) {
+            Use(value);
+        }
+        args[index++] = value;
+    }
+}
+
 bool Inst::IsArithmeticShift() const {
     return op == Opcode::ArithmeticShiftRight32
         || op == Opcode::ArithmeticShiftRight64;
@@ -637,6 +652,9 @@ size_t Inst::NumArgs() const {
     return GetNumArgsOf(op);
 }
 
+#if __has_cpp_attribute(clang::always_inline)
+[[clang::always_inline]]
+#endif
 Value Inst::GetArg(size_t index) const {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::GetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
     ASSERT_MSG(!args[index].IsEmpty() || GetArgTypeOf(op, index) == IR::Type::Opaque, "Inst::GetArg: index {} is empty", index, args[index].GetType());
@@ -644,6 +662,9 @@ Value Inst::GetArg(size_t index) const {
     return args[index];
 }
 
+#if __has_cpp_attribute(clang::always_inline)
+[[clang::always_inline]]
+#endif
 const Value& Inst::GetArgRef(size_t index) const {
     ASSERT_MSG(index < GetNumArgsOf(op), "Inst::GetArg: index {} >= number of arguments of {} ({})", index, op, GetNumArgsOf(op));
     ASSERT_MSG(!args[index].IsEmpty() || GetArgTypeOf(op, index) == IR::Type::Opaque, "Inst::GetArg: index {} is empty", index, args[index].GetType());

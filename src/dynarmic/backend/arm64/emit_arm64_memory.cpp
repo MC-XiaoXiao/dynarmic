@@ -246,13 +246,24 @@ constexpr size_t page_bits = 12;
 constexpr size_t page_size = 1 << page_bits;
 constexpr size_t page_mask = (1 << page_bits) - 1;
 
-// This function may use Xscratch0 as a scratch register
+// This function may use Xscratch1 as a scratch register
 // Trashes NZCV
 template<size_t bitsize>
-void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label* fallback) {
+void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const IR::Value& vaddr, oaknut::Label* fallback) {
     static_assert(bitsize == 8 || bitsize == 16 || bitsize == 32 || bitsize == 64 || bitsize == 128);
 
     if (bitsize == 8 || (ctx.conf.detect_misaligned_access_via_page_table & bitsize) == 0) {
+        return;
+    }
+
+    if (vaddr.IsImmediate()) {
+        const auto address = vaddr.GetImmediateAsU64();
+        const bool misaligned = ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary
+            ? (address & page_mask) > page_size - bitsize / 8
+            : (address & (bitsize / 8 - 1)) != 0;
+        if (misaligned) {
+            code.B(AL, *fallback);
+        }
         return;
     }
 
@@ -276,8 +287,8 @@ void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oa
         code.B(NE, *fallback);
     } else {
         // If (addr & page_mask) > page_size - byte_size, use fallback.
-        code.AND(Xscratch0, Xaddr, page_mask);
-        code.CMP(Xscratch0, page_size - bitsize / 8);
+        code.AND(Xscratch1, Xaddr, page_mask);
+        code.CMP(Xscratch1, page_size - bitsize / 8);
         code.B(HI, *fallback);
     }
 }
@@ -287,11 +298,9 @@ void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oa
 // Address to read/write = [ret0 + ret1], ret0 is always Xscratch0 and ret1 is either Xaddr or Xscratch1
 // Trashes NZCV
 template<size_t bitsize>
-std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label* fallback, bool read_table) {
+std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const IR::Value& vaddr, oaknut::Label* fallback, bool read_table) {
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
-
-    EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, fallback);
 
     if (ctx.conf.silently_mirror_page_table || unused_top_bits == 0) {
         code.UBFX(Xscratch0, Xaddr, page_bits, valid_page_index_bits);
@@ -322,6 +331,9 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
         }
         code.LDR(Xscratch0, base, Xscratch0, LSL, 3);
     }
+
+    // Alignment work can overlap the independent, bounds-checked table load.
+    EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, vaddr, fallback);
 
     if (ctx.conf.page_table_pointer_mask_bits != 0) {
         const u64 mask = u64(~u64(0)) << ctx.conf.page_table_pointer_mask_bits;
@@ -478,7 +490,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
     auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(
-        code, ctx, Xaddr, fallback, true);
+        code, ctx, Xaddr, inst->GetArg(1), fallback, true);
     EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
 
     u32 vector_store = 0;
@@ -489,7 +501,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
         }
     }
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, vector_store, fallback, end] {
-        code.l(*fallback);
+        BindColdLabel(code, ctx, *fallback);
         if (vector_store)
             code.dw(vector_store);
         code.MOV(Xscratch0, Xaddr);
@@ -503,6 +515,7 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
             EmitMemoryCallbackResult<bitsize>(code, Rvalue.toX(), Xscratch0);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
+        RecordBlockBranch(code, ctx, *end, LinkTarget::BlockBranch);
         code.B(*end);
     }, ctx.labels.Allocator());
 
@@ -529,11 +542,11 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
     auto* end = ctx.labels.Create();
 
     const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(
-        code, ctx, Xaddr, fallback, false);
+        code, ctx, Xaddr, inst->GetArg(1), fallback, false);
     EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
 
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
-        code.l(*fallback);
+        BindColdLabel(code, ctx, *fallback);
         if constexpr (bitsize == 128) {
             code.MOV(Xscratch0, Xaddr);
             code.MOV(Q0.B16(), Rvalue.B16());
@@ -549,6 +562,7 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
             code.DMB(oaknut::BarrierOp::ISH);
         }
         ctx.conf.emit_check_memory_abort(code, ctx, inst, *end);
+        RecordBlockBranch(code, ctx, *end, LinkTarget::BlockBranch);
         code.B(*end);
     }, ctx.labels.Allocator());
 

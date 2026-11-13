@@ -23,6 +23,10 @@ namespace Dynarmic::Backend::Arm64 {
 
 using namespace oaknut::util;
 
+void EmitA32ReloadStackPointer(oaknut::CodeGenerator& code) {
+    code.LDR(Wguestsp, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * 13);
+}
+
 oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext&, IR::Cond cond) {
     oaknut::Label pass;
     // TODO: Flags in host flags
@@ -174,6 +178,7 @@ void EmitA32CheckMemoryAbort(oaknut::CodeGenerator& code, EmitContext& ctx, IR::
     // halt_reason is a u32; an X-register acquire load also requires 8-byte alignment.
     code.LDAR(Wscratch0, Xhalt);
     code.TST(Wscratch0, static_cast<u32>(HaltReason::MemoryAbort));
+    RecordBlockBranch(code, ctx, end, LinkTarget::BlockConditionalBranch);
     code.B(EQ, end);
     EmitSetUpperLocationDescriptor(code, ctx, current_location, ctx.block.Location());
     code.MOV(Wscratch0, current_location.PC());
@@ -208,7 +213,10 @@ void EmitIR<IR::Opcode::A32GetRegister>(oaknut::CodeGenerator& code, EmitContext
 
     // TODO: Detect if Gpr vs Fpr is more appropriate
 
-    code.LDR(Wresult, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * static_cast<size_t>(reg));
+    if (ctx.conf.a32_sp_in_register && reg == A32::Reg::SP)
+        code.MOV(Wresult, Wguestsp);
+    else
+        code.LDR(Wresult, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * static_cast<size_t>(reg));
 }
 
 template<>
@@ -268,6 +276,8 @@ void EmitIR<IR::Opcode::A32SetRegister>(oaknut::CodeGenerator& code, EmitContext
 
     // TODO: Detect if Gpr vs Fpr is more appropriate
 
+    if (ctx.conf.a32_sp_in_register && reg == A32::Reg::SP)
+        code.MOV(Wguestsp, Wvalue);
     code.STR(Wvalue, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * static_cast<size_t>(reg));
 }
 

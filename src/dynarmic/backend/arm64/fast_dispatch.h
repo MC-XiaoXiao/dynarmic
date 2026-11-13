@@ -22,7 +22,8 @@ public:
         std::byte* code{};
     };
     static_assert(sizeof(Entry) == 16);
-    static constexpr size_t entry_count = 1024;
+    static constexpr size_t index_bits = 10;
+    static constexpr size_t entry_count = 1U << index_bits;
     static constexpr size_t index_mask = entry_count - 1;
 
     Entry* Data() { return entries.data(); }
@@ -42,7 +43,10 @@ public:
 
 private:
     static constexpr size_t Index(u64 descriptor) {
-        return ((descriptor >> 2) ^ (descriptor >> 32)) & index_mask;
+        // Distinguish Thumb targets at opposite halfwords of the same word.
+        // Word-aligned targets retain their existing index.
+        return ((descriptor >> 2) ^ (descriptor >> 32) ^
+                (descriptor << (index_bits - 2))) & index_mask;
     }
 
     std::array<Entry, entry_count> entries{};

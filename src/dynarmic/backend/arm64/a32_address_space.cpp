@@ -347,6 +347,52 @@ void A32AddressSpace::ClearCache() {
     block_ranges.ClearCache();
 }
 
+void A32AddressSpace::TouchBlock(IR::LocationDescriptor location, CodePtr published_entry) const {
+    touch_code_segment(published_entry);
+    const auto entry = entries.find(location);
+    if (entry != entries.end())
+        touch_code_segment(entry->second.body);
+}
+
+A32AddressSpace::RetiredCodeStats A32AddressSpace::RecycleCodeSegment() {
+    const auto victim = select_recycle_segment();
+    const auto& segment = code_segments[victim];
+    const auto used = segment.used_bytes;
+    tsl::robin_set<IR::LocationDescriptor> locations;
+    if (used != 0U) {
+        const auto contains = [&](CodePtr address) {
+            return address >= segment.begin && address < segment.end;
+        };
+        for (const auto& [body, location] : code_indexes[victim].reverse_block_entries) {
+            const auto entry = entries.find(location);
+            const auto current = entry == entries.end() ? Get(location) : entry->second.body;
+            if (Get(location) && current == body)
+                locations.insert(location);
+        }
+        UnprotectCodeMemory();
+        for (auto it = entries.begin(); it != entries.end();) {
+            const auto& entry = it->second;
+            if (contains(entry.trampoline) || contains(entry.body)) {
+                if (Get(it->first))
+                    locations.insert(it->first);
+                if (!contains(entry.trampoline))
+                    PublishBranch(entry.trampoline, static_cast<CodePtr>(prelude_info.return_to_dispatcher));
+                it = entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        RetireCodeIndex(victim, locations);
+        block_ranges.InvalidateLocations(locations);
+        ProtectCodeMemory();
+        ++code_storage_generation;
+    }
+    activate_code_segment(victim);
+    code.set_xptr(reinterpret_cast<u32*>(segment.begin));
+    ResetColdCodeLayout();
+    return {locations.size(), used};
+}
+
 void A32AddressSpace::EmitPrelude() {
     using namespace oaknut::util;
 
@@ -417,6 +463,7 @@ void A32AddressSpace::EmitPrelude() {
         code.LDAR(Wscratch0, Xhalt);
         code.CBNZ(Wscratch0, return_from_run_code);
 
+        EmitA32ReloadStackPointer(code);
         code.BR(X19);
     }
 
@@ -455,6 +502,7 @@ void A32AddressSpace::EmitPrelude() {
         code.STLXR(Wscratch1, Wscratch0, Xhalt);
         code.CBNZ(Wscratch1, step_hr_loop);
 
+        EmitA32ReloadStackPointer(code);
         code.BR(X19);
     }
 
@@ -476,9 +524,9 @@ void A32AddressSpace::EmitPrelude() {
             // Hits stay in generated code; collisions use the normal compiler.
             static_assert(offsetof(A32JitState, regs) + 16 * sizeof(u32) == offsetof(A32JitState, upper_location_descriptor));
             code.LDUR(Xscratch0, Xstate, offsetof(A32JitState, regs) + 15 * sizeof(u32));
-            code.LSR(Xscratch1, Xscratch0, 2);
-            code.EOR(Xscratch1, Xscratch1, Xscratch0, LSR, 32);
-            code.AND(Xscratch1, Xscratch1, FastDispatchCache::index_mask);
+            code.EOR(Xscratch1, Xscratch0, Xscratch0, LSR, 30);
+            code.EOR(Xscratch1, Xscratch1, Xscratch0, LSL, FastDispatchCache::index_bits);
+            code.UBFX(Xscratch1, Xscratch1, 2, FastDispatchCache::index_bits);
             if (conf.fast_dispatch_table_link) {
                 code.LDR(Xscratch2, Xstate, offsetof(A32JitState, fast_dispatch_table_link));
                 code.LDAR(Xscratch2, Xscratch2);
@@ -503,6 +551,7 @@ void A32AddressSpace::EmitPrelude() {
         code.MOV(X2, SP);
         code.LDR(Xscratch0, l_addr);
         code.BLR(Xscratch0);
+        EmitA32ReloadStackPointer(code);
         // Compilation callbacks can request a stop before entering guest code.
         code.LDAR(Wscratch0, Xhalt);
         code.CBNZ(Wscratch0, return_from_run_code);
@@ -541,6 +590,7 @@ void A32AddressSpace::EmitPrelude() {
             code.STR(Xticks, SP, offsetof(StackLayout, cycles_to_run));
             // The dispatcher checks asynchronous halts again before entry.
             // Keep the ABI frame, Guest FPCR and RSB across clock probes.
+            EmitA32ReloadStackPointer(code);
             code.B(prelude_info.return_to_dispatcher);
             code.l(finish);
         }
@@ -587,7 +637,9 @@ std::shared_ptr<const A32::NativeCodeTemplate> A32AddressSpace::BuildTemplate(IR
     emission_source = &source;
     SCOPE_EXIT { emission_source = nullptr; };
     UnprotectCodeMemory();
-    auto info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
+    auto info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager,
+                          std::move(emission_relocations));
+    SCOPE_EXIT { RecycleEmissionRelocations(info.relocations); };
     if (!A32NativeCodeTemplate::Eligible(source, block, info))
         return {};
     return std::make_shared<const A32NativeCodeTemplate>(source, block, info);
@@ -611,6 +663,7 @@ void A32AddressSpace::FinishEntryPublication(IR::LocationDescriptor location, Co
     // Native bytes and relocations are synchronized before the release store.
     // Old bodies stay allocated until the existing quiescent cache retirement.
     entry.value().baseline = emission_source && emission_source->fast_compilation;
+    entry.value().body = body;
     PublishBranch(entry->second.trampoline, body);
 }
 
@@ -646,11 +699,10 @@ A32::NativeCodeSlab::BlockDescriptor A32AddressSpace::ImportTemplate(
     // Relocation offsets are immutable; only the emitted instructions change.
     // Retain the map independently of the template and its native words.
     EmittedBlockInfo info{};
-    info.entry_point = code.xptr<CodePtr>();
     info.size = native_template->info.size;
+    info.hot_size = native_template->info.hot_size;
     info.shared_block_relocations = native_template->info.shared_block_relocations;
-    std::memcpy(info.entry_point, native_template->words.data(), info.size);
-    code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
+    PlaceBlock(info, native_template->words.data());
     const auto& emitted = PublishBlock(native_template->location, std::move(info), native_template->info.relocations);
     const A32::LocationDescriptor start{native_template->location};
     const A32::LocationDescriptor end{native_template->end_location};
@@ -714,6 +766,7 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .coprocessors = emission_source ? emission_source->coprocessors : conf.coprocessors,
         .coprocessor_user_arg_linked = conf.coprocessor_user_arg_link != nullptr,
         .shared_native_code = emission_source != nullptr,
+        .a32_sp_in_register = true,
 
         .very_verbose_debugging_output = conf.very_verbose_debugging_output,
     };
@@ -735,19 +788,30 @@ A32::NativeCodeSlab::CodeRangeSnapshot A32AddressSpace::GetCodeRanges(size_t max
     A32::NativeCodeSlab::CodeRangeSnapshot result;
     result.retains_invalidated = true;
     result.storage_generation = code_storage_generation;
-    result.total_ranges = block_infos.size() + entries.size() + 1;
+    result.total_ranges = entries.size() + 1;
+    for (const auto& index : code_indexes) {
+        result.total_ranges += index.block_infos.size();
+        for (const auto& chunk : index.cold_owners)
+            result.total_ranges += chunk.size();
+    }
     result.ranges.reserve(std::min(maximum_ranges, result.total_ranges));
     if (maximum_ranges == 0)
         return result;
     result.ranges.push_back({0, reinterpret_cast<std::uintptr_t>(mem.ptr()),
         static_cast<size_t>(prelude_info.end_of_prelude), A32::NativeCodeSlab::CodeRangeKind::Runtime});
-    auto descriptor = reverse_block_entries.begin();
-    for (const auto& [entrypoint, info] : block_infos) {
-        if (result.ranges.size() == maximum_ranges)
-            break;
-        ASSERT(descriptor != reverse_block_entries.end() && descriptor->first == entrypoint);
-        result.ranges.push_back({descriptor->second.Value(), reinterpret_cast<std::uintptr_t>(entrypoint), info.size});
-        ++descriptor;
+    for (const auto& index : code_indexes) {
+        auto descriptor = index.reverse_block_entries.begin();
+        for (const auto& [entrypoint, info] : index.block_infos) {
+            if (result.ranges.size() == maximum_ranges)
+                break;
+            ASSERT(descriptor != index.reverse_block_entries.end() && descriptor->first == entrypoint);
+            result.ranges.push_back({descriptor->second.Value(), reinterpret_cast<std::uintptr_t>(entrypoint),
+                info.cold_offset ? info.hot_size : info.size});
+            if (info.cold_offset && result.ranges.size() != maximum_ranges)
+                result.ranges.push_back({descriptor->second.Value(),
+                    reinterpret_cast<std::uintptr_t>(info.CodeAddress(info.hot_size)), info.size - info.hot_size});
+            ++descriptor;
+        }
     }
     for (const auto& [location, entry] : entries) {
         if (result.ranges.size() == maximum_ranges)

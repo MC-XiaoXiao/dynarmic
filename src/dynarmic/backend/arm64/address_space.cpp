@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <functional>
 
 #include <mcl/bit_cast.hpp>
@@ -28,6 +29,9 @@ AddressSpace::AddressSpace(size_t code_cache_size)
         , mem(code_cache_size)
         , code(mem.ptr(), mem.ptr())
         , fastmem_manager(exception_handler) {
+    // Mixed descriptor bits keep this large metadata index compact without
+    // clustering aligned guest addresses in the power-of-two bucket table.
+    block_references.max_load_factor(0.8f);
     ASSERT_MSG(code_cache_size <= 128 * 1024 * 1024, "code_cache_size > 128 MiB not currently supported");
 
     exception_handler.Register(mem, code_cache_size);
@@ -38,27 +42,53 @@ AddressSpace::AddressSpace(size_t code_cache_size)
 
 AddressSpace::~AddressSpace() = default;
 
-CodePtr AddressSpace::Get(IR::LocationDescriptor descriptor) {
+CodePtr AddressSpace::Get(IR::LocationDescriptor descriptor) const {
     if (const auto iter = block_entries.find(descriptor); iter != block_entries.end()) {
         return iter->second;
     }
     return nullptr;
 }
 
+const AddressSpace::CodeIndex* AddressSpace::FindCodeIndex(CodePtr address) const {
+    if (code_segments.empty())
+        return &code_indexes.front();
+    const auto segment = code_segment_index(address);
+    return segment ? &code_indexes[*segment] : nullptr;
+}
+
 std::optional<IR::LocationDescriptor> AddressSpace::ReverseGetLocation(CodePtr host_pc) {
-    if (auto iter = reverse_block_entries.upper_bound(host_pc); iter != reverse_block_entries.begin()) {
-        // upper_bound locates the first value greater than host_pc, so we need to decrement
-        --iter;
-        return iter->second;
+    const auto entry = ReverseGetEntryPoint(host_pc);
+    const auto* index = FindCodeIndex(entry);
+    if (index) {
+        const auto it = index->reverse_block_entries.find(entry);
+        if (it != index->reverse_block_entries.end())
+            return it->second;
     }
     return std::nullopt;
 }
 
 CodePtr AddressSpace::ReverseGetEntryPoint(CodePtr host_pc) {
-    if (auto iter = reverse_block_entries.upper_bound(host_pc); iter != reverse_block_entries.begin()) {
-        // upper_bound locates the first value greater than host_pc, so we need to decrement
-        --iter;
-        return iter->first;
+    const auto* index = FindCodeIndex(host_pc);
+    if (index) {
+        if (!code_segments.empty()) {
+            const auto segment = *code_segment_index(host_pc);
+            const auto offset = static_cast<size_t>(host_pc - code_segments[segment].begin);
+            const auto chunk = offset / ColdCodeLayout::chunk_bytes;
+            if (chunk < index->cold_owners.size()) {
+                const auto& owners = index->cold_owners[chunk];
+                const auto within = static_cast<u32>(offset % ColdCodeLayout::chunk_bytes);
+                const auto found = std::lower_bound(owners.begin(), owners.end(), within,
+                    [](const auto& owner, u32 value) { return owner.offset > value; });
+                if (found != owners.end()) {
+                    const auto block = index->block_infos.begin() + found->block_index;
+                    if (within - found->offset < block->second.size - block->second.hot_size)
+                        return block->first;
+                }
+            }
+        }
+        auto it = index->reverse_block_entries.upper_bound(host_pc);
+        if (it != index->reverse_block_entries.begin())
+            return std::prev(it)->first;
     }
     return nullptr;
 }
@@ -128,25 +158,100 @@ void AddressSpace::ClearCache() {
         fast_dispatch_cache->Clear();
     }
     block_entries.clear();
-    // Clearing a cache releases the reverse index, including its capacity.
-    decltype(reverse_block_entries){}.swap(reverse_block_entries);
-    decltype(block_infos){}.swap(block_infos);
+    for (auto& index : code_indexes)
+        index = {};
+    reset_code_segments();
     block_references.clear();
     code.set_offset(prelude_info.end_of_prelude);
+    if (!code_segments.empty())
+        ResetColdCodeLayout();
+}
+
+void AddressSpace::EnableSegmentedCache() {
+    code.align(16);
+    prelude_info.end_of_prelude = code.offset();
+    initialize_code_segments(code.xptr<CodePtr>(), GetRemainingSize());
+    code_indexes.resize(code_segments.size());
+    emission_buffer = std::make_unique_for_overwrite<u32[]>(code_cache_size / sizeof(u32));
+    ResetColdCodeLayout();
+}
+
+void AddressSpace::ResetColdCodeLayout() {
+    const auto& segment = code_segments[current_segment];
+    cold_code.Reset(segment.begin, segment.end);
+}
+
+void AddressSpace::PlaceBlock(EmittedBlockInfo& info, const void* canonical_code) {
+    if (code_segments.empty()) {
+        info.entry_point = code.xptr<CodePtr>();
+        std::memcpy(info.entry_point, canonical_code, info.size);
+        code.set_offset(code.offset() + static_cast<std::ptrdiff_t>(info.size));
+        return;
+    }
+    // Keep large canonical images contiguous; splitting uses imm19 branches.
+    const auto hot_size = info.size + sizeof(u32) > ColdCodeLayout::chunk_bytes
+        ? info.size : (info.hot_size ? info.hot_size : info.size);
+    const auto cold_size = info.size - hot_size;
+    const auto placement = cold_code.Allocate(hot_size, cold_size);
+    info.entry_point = placement.hot;
+    info.hot_size = static_cast<u32>(hot_size);
+    info.cold_offset = cold_size ? static_cast<u32>(placement.cold - placement.hot) : 0;
+    const auto* bytes = static_cast<const std::byte*>(canonical_code);
+    std::memcpy(placement.hot, bytes, hot_size);
+    if (cold_size)
+        std::memcpy(placement.cold, bytes + hot_size, cold_size);
+    code.set_xptr(reinterpret_cast<u32*>(placement.hot + hot_size));
+}
+
+void AddressSpace::RetireCodeIndex(
+        std::size_t segment, const tsl::robin_set<IR::LocationDescriptor>& locations) {
+    ++cache_generation;
+    if (fast_dispatch_cache)
+        fast_dispatch_cache->Clear();
+    const auto& retired = code_segments[segment];
+    // Remove sources before destroying their immutable relocation buffers.
+    // Incoming references from surviving segments remain available for relinking.
+    for (auto it = block_references.begin(); it != block_references.end();) {
+        auto& references = it.value();
+        references.erase(std::remove_if(references.begin(), references.end(),
+            [&](const BlockReference& source) {
+                return source.entry_point >= retired.begin && source.entry_point < retired.end;
+            }), references.end());
+        if (references.empty())
+            it = block_references.erase(it);
+        else
+            ++it;
+    }
+    for (auto location : locations) {
+        RelinkForDescriptor(location, nullptr);
+        block_entries.erase(location);
+    }
+    code_indexes[segment] = {};
 }
 
 void AddressSpace::DumpDisassembly() const {
-    for (u32* ptr = mem.ptr(); ptr < code.xptr<u32*>(); ptr++) {
-        std::printf("%s", Common::DisassembleAArch64(*ptr, mcl::bit_cast<u64>(ptr)).c_str());
+    const auto dump = [](u32* begin, u32* end) {
+        for (auto* ptr = begin; ptr < end; ++ptr)
+            std::printf("%s", Common::DisassembleAArch64(*ptr, mcl::bit_cast<u64>(ptr)).c_str());
+    };
+    if (code_segments.empty()) {
+        dump(mem.ptr(), code.xptr<u32*>());
+    } else {
+        dump(mem.ptr(), mem.ptr() + prelude_info.end_of_prelude / sizeof(u32));
+        for (const auto& segment : code_segments)
+            dump(reinterpret_cast<u32*>(segment.begin),
+                 reinterpret_cast<u32*>(segment.begin + segment.used_bytes));
     }
 }
 
 size_t AddressSpace::GetCodeCacheUsed() const {
-    return static_cast<size_t>(code.offset());
+    return code_segments.empty() ? static_cast<size_t>(code.offset())
+                                : prelude_info.end_of_prelude + live_allocated_code_bytes;
 }
 
 size_t AddressSpace::GetRemainingSize() {
-    return code_cache_size - static_cast<size_t>(code.offset());
+    return code_segments.empty() ? code_cache_size - static_cast<size_t>(code.offset())
+                                : cold_code.Remaining();
 }
 
 void AddressSpace::EnsureEmissionSpace() {
@@ -160,8 +265,13 @@ const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
 
     UnprotectCodeMemory();
 
-    EmittedBlockInfo block_info = EmitArm64(code, block, GetEmitConfig(), fastmem_manager);
+    oaknut::CodeGenerator scratch{emission_buffer.get(), emission_buffer.get()};
+    auto& emitter = code_segments.empty() ? code : scratch;
+    EmittedBlockInfo block_info = EmitArm64(emitter, block, GetEmitConfig(), fastmem_manager,
+                                           std::move(emission_relocations));
     CaptureEmittedBlock(block, block_info);
+    if (!code_segments.empty())
+        PlaceBlock(block_info, block_info.entry_point);
     const auto& cached_info = PublishBlock(block.Location(), std::move(block_info));
     RegisterNewBasicBlock(block, cached_info);
     return cached_info;
@@ -170,6 +280,9 @@ const EmittedBlockInfo& AddressSpace::Emit(IR::Block& block) {
 const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                                   std::span<const Relocation> fixed_relocations) {
     block_entries.insert_or_assign(location, PublishEntry(location, block_info.entry_point));
+    auto& index = code_indexes[current_segment];
+    auto& reverse_block_entries = index.reverse_block_entries;
+    auto& block_infos = index.block_infos;
     ASSERT(reverse_block_entries.empty() ||
            std::less<CodePtr>{}(reverse_block_entries.rbegin()->first, block_info.entry_point));
     reverse_block_entries.emplace_hint(reverse_block_entries.end(),
@@ -177,32 +290,67 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
     Link(block_info, fixed_relocations.empty() ? std::span<const Relocation>{block_info.relocations} : fixed_relocations);
     // Prelude callback targets are fixed after initial linking. Retain only
     // block links and fastmem sites, which are needed for later patching.
-    std::vector<Relocation>{}.swap(block_info.relocations);
+    RecycleEmissionRelocations(block_info.relocations);
     // The cache owns relocation metadata. Move it once instead of copying
     // its per-block containers into the index and back to the dispatcher.
-    const auto [block_iter, inserted] = block_infos.try_emplace(block_info.entry_point, std::move(block_info));
-    ASSERT(inserted);
+    // Native addresses increase here, as in the reverse index above.
+    const auto block_iter = block_infos.try_emplace(block_infos.end(), block_info.entry_point, std::move(block_info));
     const EmittedBlockInfo& cached_info = block_iter->second;
+    if (cached_info.cold_offset) {
+        const auto offset = static_cast<size_t>(cached_info.CodeAddress(cached_info.hot_size) -
+                                              code_segments[current_segment].begin);
+        const auto chunk = offset / ColdCodeLayout::chunk_bytes;
+        index.cold_owners.resize(std::max(index.cold_owners.size(), chunk + 1));
+        index.cold_owners[chunk].push_back({static_cast<u32>(offset % ColdCodeLayout::chunk_bytes),
+            static_cast<u32>(block_infos.size() - 1)});
+    }
 
     if (!defer_block_linking)
         RelinkForDescriptor(location, Get(location));
 
-    mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), cached_info.size);
+    const auto hot_size = cached_info.cold_offset ? cached_info.hot_size : cached_info.size;
+    mem.invalidate(reinterpret_cast<u32*>(cached_info.entry_point), hot_size);
+    if (cached_info.cold_offset)
+        mem.invalidate(reinterpret_cast<u32*>(cached_info.CodeAddress(cached_info.hot_size)),
+                       cached_info.size - cached_info.hot_size);
     FinishEntryPublication(location, cached_info.entry_point);
+    if (!code_segments.empty()) {
+        cold_code.CommitHot(code.xptr<CodePtr>());
+        update_active_segment_usage(cold_code.UsedEnd());
+        touch_code_segment(cached_info.entry_point);
+    }
     ProtectCodeMemory();
 
     return cached_info;
+}
+
+void AddressSpace::RecycleEmissionRelocations(std::vector<Relocation>& relocations) {
+    // Fixed offsets are temporary. Reuse one workspace instead of retaining
+    // capacity in each published block; templates already own their copy.
+    relocations.clear();
+    if (relocations.capacity() > emission_relocations.capacity())
+        emission_relocations.swap(relocations);
+    std::vector<Relocation>{}.swap(relocations);
 }
 
 void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relocation> fixed_relocations) {
     using namespace oaknut;
     using namespace oaknut::util;
 
-    for (auto [ptr_offset, target] : fixed_relocations) {
+    for (auto [ptr_offset, target, block_offset] : fixed_relocations) {
         CodeGenerator c{mem.ptr(), mem.ptr()};
-        c.set_xptr(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset));
+        c.set_xptr(reinterpret_cast<u32*>(block_info.CodeAddress(ptr_offset)));
 
         switch (target) {
+        case LinkTarget::BlockConditionalBranch: {
+            const auto displacement = block_info.CodeAddress(block_offset) - block_info.CodeAddress(ptr_offset);
+            const auto word = *c.wptr<u32*>();
+            c.dw((word & 0xff00001fU) | ((static_cast<u32>(displacement / 4) & 0x7ffffU) << 5));
+            break;
+        }
+        case LinkTarget::BlockBranch:
+            c.B(static_cast<const void*>(block_info.CodeAddress(block_offset)));
+            break;
         case LinkTarget::ReturnToDispatcher:
             c.B(prelude_info.return_to_dispatcher);
             break;
@@ -440,6 +588,7 @@ FakeCall AddressSpace::FastmemCallback(u64 host_pc) {
             goto fail;
         }
 
+        const auto& block_infos = FindCodeIndex(entry_point)->block_infos;
         const auto block_info = block_infos.find(entry_point);
         if (block_info == block_infos.end()) {
             goto fail;

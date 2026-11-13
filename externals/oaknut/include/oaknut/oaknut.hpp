@@ -45,6 +45,19 @@ public:
         return m_offset.value();
     }
 
+    // Inspect forward references before binding a label. A client retaining
+    // code sections can reuse these offsets in its relocation stream.
+    template<typename Visitor>
+    void visit_references(Visitor&& visitor) const
+    {
+        if (m_first.m_fn != nullptr)
+            visitor(m_first.m_wb_offset);
+        std::visit([&](const auto& pending) {
+            for (const auto& wb : pending)
+                visitor(wb.m_wb_offset);
+        }, m_wbs);
+    }
+
 private:
     template<typename Policy>
     friend class BasicCodeGenerator;

@@ -38,6 +38,7 @@ static void CallCoprocCallback(oaknut::CodeGenerator& code, EmitContext& ctx, A3
 
     code.MOV(Xscratch0, reinterpret_cast<u64>(callback.function));
     code.BLR(Xscratch0);
+    EmitReloadCachedRegisters(code, ctx);
 
     if (inst) {
         ctx.reg_alloc.DefineAsRegister(inst, X0);

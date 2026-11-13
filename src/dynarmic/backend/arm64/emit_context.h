@@ -5,8 +5,7 @@
 
 #pragma once
 
-#include <vector>
-
+#include <boost/container/small_vector.hpp>
 #include <boost/function.hpp>
 #include <oaknut/oaknut.hpp>
 
@@ -42,7 +41,7 @@ struct EmitContext {
     DeferredVectorStore deferred_vector_store;
     DeferredLabels labels;
     // Destroy callbacks before labels and their shared block-local resource.
-    std::vector<boost::function<void()>> deferred_emits;
+    boost::container::small_vector<boost::function<void()>, 1> deferred_emits;
 
     FP::FPCR FPCR(bool fpcr_controlled = true) const {
         const FP::FPCR fpcr = conf.descriptor_to_fpcr(block.Location());

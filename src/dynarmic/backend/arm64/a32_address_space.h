@@ -31,6 +31,10 @@ public:
 
     tsl::robin_set<IR::LocationDescriptor> InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
     void ClearCache() override;
+    using AddressSpace::EnableSegmentedCache;
+    struct RetiredCodeStats { std::size_t descriptors; std::size_t code_bytes; };
+    RetiredCodeStats RecycleCodeSegment();
+    void TouchBlock(IR::LocationDescriptor location, CodePtr entry) const;
 
     HaltReason RunCode(CodePtr entry, void* state, volatile u32* halt, bool step) const {
         return (step ? prelude_info.step_code : prelude_info.run_code)(entry, state, halt);
@@ -74,10 +78,11 @@ private:
     struct Entry {
         CodePtr trampoline{};
         bool baseline{};
+        CodePtr body{};
     };
     tsl::robin_map<IR::LocationDescriptor, Entry> entries;
     // Range invalidation retires blocks without reusing their native storage.
-    // Only a full clear can rewind emission and invalidate address ownership.
+    // Segment retirement and full clears can reuse native addresses.
     u64 code_storage_generation{1};
     std::shared_ptr<const A32::NativeCodeTemplate> emitted_template;
     const A32::UserConfig* emission_source{};

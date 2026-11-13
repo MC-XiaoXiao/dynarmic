@@ -12,15 +12,18 @@
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
+#include <mcl/hash/xmrx.hpp>
 #include <mcl/stdint.hpp>
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
+#include "dynarmic/backend/arm64/cold_code_layout.h"
 #include "dynarmic/backend/arm64/emit_arm64.h"
 #include "dynarmic/backend/arm64/fast_dispatch.h"
 #include "dynarmic/backend/arm64/fastmem.h"
+#include "dynarmic/backend/native_code_segments.h"
 #include "dynarmic/interface/halt_reason.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
@@ -29,14 +32,14 @@ namespace Dynarmic::Backend::Arm64 {
 
 struct StackLayout;
 
-class AddressSpace {
+class AddressSpace : protected NativeCodeSegments<std::byte> {
 public:
     explicit AddressSpace(size_t code_cache_size);
     virtual ~AddressSpace();
 
     virtual IR::Block GenerateIR(IR::LocationDescriptor) const = 0;
 
-    CodePtr Get(IR::LocationDescriptor descriptor);
+    CodePtr Get(IR::LocationDescriptor descriptor) const;
 
     // Returns "most likely" LocationDescriptor assocated with the emitted code at that location
     std::optional<IR::LocationDescriptor> ReverseGetLocation(CodePtr host_pc);
@@ -83,11 +86,17 @@ protected:
     const EmittedBlockInfo& PublishBlock(IR::LocationDescriptor location, EmittedBlockInfo block_info,
                                        std::span<const Relocation> fixed_relocations = {});
     void Link(const EmittedBlockInfo& block, std::span<const Relocation> fixed_relocations);
+    void RecycleEmissionRelocations(std::vector<Relocation>& relocations);
     template<bool Synchronize = false>
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, std::span<const BlockRelocation> block_relocations_list);
     void RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void RelinkBranchesForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr);
     void PublishBranch(CodePtr patch, CodePtr target);
+    void EnableSegmentedCache();
+    void ResetColdCodeLayout();
+    void PlaceBlock(EmittedBlockInfo& info, const void* canonical_code);
+    void RetireCodeIndex(std::size_t segment,
+                         const tsl::robin_set<IR::LocationDescriptor>& locations);
 
     FakeCall FastmemCallback(u64 host_pc);
 
@@ -97,25 +106,41 @@ protected:
     std::unique_ptr<FastDispatchCache> fast_dispatch_cache;
     oaknut::CodeBlock mem;
     oaknut::CodeGenerator code;
+    std::unique_ptr<u32[]> emission_buffer;
+    std::vector<Relocation> emission_relocations;
+    ColdCodeLayout cold_code;
 
     // A IR::LocationDescriptor will have one current CodePtr.
     // However, there can be multiple other CodePtrs which are older, previously invalidated blocks.
     tsl::robin_map<IR::LocationDescriptor, CodePtr> block_entries;
-    // Native addresses increase until a full clear. Keep reverse lookups
-    // contiguous instead of allocating a tree node for every compiled block.
-    boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
-    // Native entries are appended in address order within each generation.
-    // A packed index avoids empty hash buckets carrying full block metadata.
-    boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
+    struct CodeIndex {
+        boost::container::flat_map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
+        boost::container::flat_map<CodePtr, EmittedBlockInfo> block_infos;
+        struct ColdOwner {
+            u32 offset;
+            u32 block_index;
+        };
+        // Each chunk's cold addresses descend in publication order.
+        std::vector<std::vector<ColdOwner>> cold_owners;
+    };
+    // Each physical segment appends independently after the code ring wraps.
+    // Retirement releases only that segment's packed metadata.
+    std::vector<CodeIndex> code_indexes{1};
+    const CodeIndex* FindCodeIndex(CodePtr address) const;
     struct BlockReference {
         CodePtr entry_point;
         std::span<const BlockRelocation> relocations;
+    };
+    struct DescriptorHash {
+        size_t operator()(IR::LocationDescriptor descriptor) const noexcept {
+            return mcl::hash::xmrx(descriptor.Value());
+        }
     };
     // Relocation buffers are immutable and owned by block_infos (or its shared
     // templates) until ClearCache, including sources invalidated in between.
     // Moving the metadata index preserves these separately allocated buffers.
     // Index them directly so patching does not search both source indexes again.
-    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>> block_references;
+    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>, DescriptorHash> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

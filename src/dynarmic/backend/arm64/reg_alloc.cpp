@@ -87,8 +87,11 @@ HostLoc::Kind Argument::CurrentLocationKind() const {
     return reg_alloc.ValueLocation(value.GetInst())->kind;
 }
 
-bool HostLocInfo::Contains(const IR::Inst* value) const {
-    return std::find(values.begin(), values.end(), value) != values.end();
+void HostLocInfo::ClearValues(std::span<HostLoc> locations) {
+    // Retire the dense index at the same boundary as the owning alias list.
+    for (const auto* value : values)
+        locations[value->GetName()].index = -1;
+    values.clear();
 }
 
 void HostLocInfo::SetupScratchLocation() {
@@ -96,9 +99,9 @@ void HostLocInfo::SetupScratchLocation() {
     realized = true;
 }
 
-void HostLocInfo::SetupLocation(const IR::Inst* value) {
+void HostLocInfo::SetupLocation(const IR::Inst* value, std::span<HostLoc> locations) {
     ASSERT(IsCompletelyEmpty());
-    values.clear();
+    ClearValues(locations);
     values.push_back(value);
     realized = true;
     uses_this_inst = 0;
@@ -118,12 +121,12 @@ bool HostLocInfo::IsOneRemainingUse() const {
     return accumulated_uses + 1 == expected_uses && uses_this_inst == 1;
 }
 
-void HostLocInfo::UpdateUses() {
+void HostLocInfo::UpdateUses(std::span<HostLoc> locations) {
     accumulated_uses += uses_this_inst;
     uses_this_inst = 0;
 
     if (accumulated_uses == expected_uses) {
-        values.clear();
+        ClearValues(locations);
         accumulated_uses = 0;
         expected_uses = 0;
     }
@@ -223,16 +226,17 @@ void RegAlloc::DefineAsRegister(IR::Inst* inst, oaknut::Reg reg) {
 }
 
 void RegAlloc::UpdateAllUses() {
+    const std::span locations{value_locations.data(), value_locations.size()};
     // ValueInfo records locations touched by this instruction, including both
     // ends of moves. Unchanged locations have no new uses to retire.
     for (u64 remaining = std::exchange(used_registers, 0); remaining; remaining &= remaining - 1) {
         const auto index = static_cast<size_t>(std::countr_zero(remaining));
         auto& info = index < 32 ? gprs[index] : fprs[index - 32];
-        info.UpdateUses();
+        info.UpdateUses(locations);
     }
-    flags.UpdateUses();
+    flags.UpdateUses(locations);
     for (u64 remaining = std::exchange(used_spills, 0); remaining; remaining &= remaining - 1) {
-        spills[std::countr_zero(remaining)].UpdateUses();
+        spills[std::countr_zero(remaining)].UpdateUses(locations);
     }
 }
 
@@ -390,18 +394,18 @@ int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
     if constexpr (kind == HostLoc::Kind::Gpr) {
         const int new_location_index = AllocateRegister(gprs, gpr_order);
         SpillGpr(new_location_index);
-        ValueInfo(HostLoc{HostLoc::Kind::Gpr, new_location_index}).SetupLocation(value);
+        ValueInfo(HostLoc{HostLoc::Kind::Gpr, new_location_index}).SetupLocation(value, {value_locations.data(), value_locations.size()});
         value_locations[value->GetName()] = HostLoc{HostLoc::Kind::Gpr, new_location_index};
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Fpr) {
         const int new_location_index = AllocateRegister(fprs, fpr_order);
         SpillFpr(new_location_index);
-        ValueInfo(HostLoc{HostLoc::Kind::Fpr, new_location_index}).SetupLocation(value);
+        ValueInfo(HostLoc{HostLoc::Kind::Fpr, new_location_index}).SetupLocation(value, {value_locations.data(), value_locations.size()});
         value_locations[value->GetName()] = HostLoc{HostLoc::Kind::Fpr, new_location_index};
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Flags) {
         SpillFlags();
-        flags.SetupLocation(value);
+        flags.SetupLocation(value, {value_locations.data(), value_locations.size()});
         value_locations[value->GetName()] = HostLoc{HostLoc::Kind::Flags, 0};
         return 0;
     } else {
@@ -512,7 +516,7 @@ void RegAlloc::ReadWriteFlags(Argument& read, IR::Inst* write) {
     }
 
     if (write) {
-        flags.SetupLocation(write);
+        flags.SetupLocation(write, {value_locations.data(), value_locations.size()});
         value_locations[write->GetName()] = HostLoc{HostLoc::Kind::Flags, 0};
         flags.realized = false;
     }
@@ -531,8 +535,11 @@ void RegAlloc::SpillFlags() {
 
 int RegAlloc::FindFreeSpill() {
     const auto iter = std::find_if(spills.begin(), spills.end(), [](const HostLocInfo& info) { return info.values.empty(); });
-    ASSERT_MSG(iter != spills.end(), "All spill locations are full");
     const auto index = static_cast<size_t>(iter - spills.begin());
+    if (iter == spills.end()) {
+        ASSERT_MSG(index < SpillCount, "All spill locations are full");
+        spills.emplace_back();
+    }
     return static_cast<int>(index);
 }
 
@@ -593,22 +600,7 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
     const auto location = value_locations[name];
     if (location.index < 0)
         return std::nullopt;
-    // A value can expire before its host slot is reused. Retain the old
-    // semantics by validating the small alias list, without scanning all slots.
-    const auto& info = [&]() -> const HostLocInfo& {
-        switch (location.kind) {
-        case HostLoc::Kind::Gpr:
-            return gprs[location.index];
-        case HostLoc::Kind::Fpr:
-            return fprs[location.index];
-        case HostLoc::Kind::Flags:
-            return flags;
-        case HostLoc::Kind::Spill:
-            return spills[location.index];
-        }
-        ASSERT_FALSE("Invalid host location");
-    }();
-    return info.Contains(value) ? std::optional{location} : std::nullopt;
+    return location;
 }
 
 HostLocInfo& RegAlloc::ValueInfo(HostLoc host_loc) {

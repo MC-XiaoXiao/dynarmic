@@ -37,13 +37,7 @@ void Block::AppendNewInst(Opcode opcode, std::initializer_list<IR::Value> args) 
 }
 
 Block::iterator Block::PrependNewInst(iterator insertion_point, Opcode opcode, std::initializer_list<Value> args) {
-    IR::Inst* inst = new (instruction_alloc_pool->Alloc()) IR::Inst(opcode);
-    ASSERT(args.size() == inst->NumArgs());
-
-    std::for_each(args.begin(), args.end(), [&inst, index = size_t(0)](const auto& arg) mutable {
-        inst->SetArg(index, arg);
-        index++;
-    });
+    IR::Inst* inst = new (instruction_alloc_pool->Alloc()) IR::Inst(opcode, args);
 
     return instructions.insert_before(insertion_point, inst);
 }

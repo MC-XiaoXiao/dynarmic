@@ -24,6 +24,7 @@
 #include <mcl/stdint.hpp>
 
 #include "dynarmic/backend/native_code_slab_lifetime.h"
+#include "dynarmic/backend/native_code_segments.h"
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/block_of_code.h"
@@ -112,140 +113,28 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
 }
 
 
-struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState, A32EmitX64::FastDispatchEntry> {
+struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState, A32EmitX64::FastDispatchEntry>, Backend::NativeCodeSegments<u8> {
     using BlockDescriptor = NativeCodeSlab::BlockDescriptor;
 
-    struct CodeSegment {
-        u8* begin{};
-        u8* end{};
-        std::uint64_t last_touch{};
-        std::size_t used_bytes{};
-        bool initialized{};
-    };
-
     void initialize_code_segments() {
-        constexpr std::size_t minimum_segment_bytes = 16U * 1024U * 1024U;
-        constexpr std::size_t target_segment_bytes = 32U * 1024U * 1024U;
-        constexpr std::size_t maximum_segment_count = 48U;
-        constexpr std::size_t alignment = 4096U;
-        auto* const begin = const_cast<u8*>(
-            reinterpret_cast<const u8*>(block_of_code->GetCodeBegin()));
-        const auto usable_bytes = block_of_code->SpaceRemaining();
-        const auto target_count = std::max<std::size_t>(1U,
-            (usable_bytes + target_segment_bytes - 1U) /
-                target_segment_bytes);
-        const auto maximum_by_minimum = std::max<std::size_t>(
-            1U, usable_bytes / minimum_segment_bytes);
-        const auto segment_count = std::min(
-            {maximum_segment_count, target_count, maximum_by_minimum});
-        auto segment_bytes = usable_bytes / segment_count;
-        segment_bytes &= ~(alignment - 1U);
-        if (segment_bytes == 0U) {
-            segment_bytes = usable_bytes;
-        }
-
-        code_segments.clear();
-        code_segments.reserve(segment_count);
-        code_segments_begin = begin;
-        regular_segment_bytes = segment_bytes;
-        for (std::size_t index = 0; index < segment_count; ++index) {
-            auto* const segment_begin = begin + segment_bytes * index;
-            auto* const segment_end = index + 1U == segment_count
-                                        ? begin + usable_bytes
-                                        : segment_begin + segment_bytes;
-            code_segments.push_back(
-                CodeSegment{segment_begin, segment_end, 0U, 0U, false});
-        }
-        emitter->SetCodeSegmentCount(segment_count);
-        reset_code_segments();
+        NativeCodeSegments<u8>::initialize_code_segments(
+            const_cast<u8*>(reinterpret_cast<const u8*>(block_of_code->GetCodeBegin())),
+            block_of_code->SpaceRemaining());
+        emitter->SetCodeSegmentCount(code_segments.size());
+        block_of_code->SetCodePtr(code_segments.front().begin);
     }
 
     void reset_code_segments() {
-        for (auto& segment : code_segments) {
-            segment.last_touch = 0U;
-            segment.used_bytes = 0U;
-            segment.initialized = false;
-        }
-        current_segment = 0U;
-        segment_touch_clock = 1U;
-        live_allocated_code_bytes = 0U;
-        if (!code_segments.empty()) {
-            code_segments.front().initialized = true;
-            code_segments.front().last_touch = segment_touch_clock;
-            block_of_code->SetCodePtr(code_segments.front().begin);
-        }
-    }
-
-    [[nodiscard]] std::optional<std::size_t> code_segment_index(
-        const void* entrypoint) const {
-        const auto* const address = static_cast<const u8*>(entrypoint);
-        if (address == nullptr || code_segments.empty() ||
-            regular_segment_bytes == 0U || address < code_segments_begin ||
-            address >= code_segments.back().end) {
-            return std::nullopt;
-        }
-        const auto offset = static_cast<std::size_t>(
-            address - code_segments_begin);
-        const auto index = std::min(
-            offset / regular_segment_bytes, code_segments.size() - 1U);
-        return index;
-    }
-
-    void touch_code_segment(const void* entrypoint) const {
-        if (const auto index = code_segment_index(entrypoint)) {
-            code_segments[*index].last_touch = ++segment_touch_clock;
-        }
+        NativeCodeSegments<u8>::reset_code_segments();
+        block_of_code->SetCodePtr(code_segments.front().begin);
     }
 
     void update_active_segment_usage() {
-        if (code_segments.empty())
-            return;
-        auto& segment = code_segments[current_segment];
-        const auto* const current = block_of_code->getCurr<const u8*>();
-        const auto occupied = current <= segment.begin
-                                ? std::size_t{0U}
-                            : current >= segment.end
-                                ? static_cast<std::size_t>(
-                                      segment.end - segment.begin)
-                                : static_cast<std::size_t>(
-                                      current - segment.begin);
-        if (occupied > segment.used_bytes) {
-            live_allocated_code_bytes += occupied - segment.used_bytes;
-            segment.used_bytes = occupied;
-        }
+        NativeCodeSegments<u8>::update_active_segment_usage(block_of_code->getCurr<const u8*>());
     }
 
-    [[nodiscard]] std::size_t active_segment_space_remaining() const {
-        if (code_segments.empty()) {
-            return block_of_code->SpaceRemaining();
-        }
-        const auto* const current = block_of_code->getCurr<const u8*>();
-        const auto* const end = code_segments[current_segment].end;
-        return current >= end ? 0U : static_cast<std::size_t>(end - current);
-    }
-
-    [[nodiscard]] std::size_t select_recycle_segment() const {
-        if (code_segments.size() <= 1U) {
-            return 0U;
-        }
-        for (std::size_t offset = 1U; offset <= code_segments.size();
-             ++offset) {
-            const auto candidate = (current_segment + offset) % code_segments.size();
-            if (!code_segments[candidate].initialized) {
-                return candidate;
-            }
-        }
-
-        std::size_t victim = current_segment == 0U ? std::size_t{1U} : std::size_t{0U};
-        for (std::size_t index = 0; index < code_segments.size(); ++index) {
-            if (index == current_segment) {
-                continue;
-            }
-            if (code_segments[index].last_touch < code_segments[victim].last_touch) {
-                victim = index;
-            }
-        }
-        return victim;
+    std::size_t active_segment_space_remaining() const {
+        return NativeCodeSegments<u8>::active_segment_space_remaining(block_of_code->getCurr<const u8*>());
     }
 
     [[nodiscard]] A32EmitX64::RetiredCodeStats recycle_code_segment() {
@@ -256,17 +145,10 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         const auto retired = segment.initialized
                                  ? emitter->RetireCodeRange(segment.begin, segment.end, victim)
                                  : A32EmitX64::RetiredCodeStats{};
-        live_allocated_code_bytes =
-            segment.used_bytes > live_allocated_code_bytes
-                ? 0U
-                : live_allocated_code_bytes - segment.used_bytes;
         recycled_descriptors += retired.descriptors;
         recycled_code_bytes += retired.code_bytes;
         ++segment_recycles;
-        segment.initialized = true;
-        segment.last_touch = ++segment_touch_clock;
-        segment.used_bytes = 0U;
-        current_segment = victim;
+        activate_code_segment(victim);
         block_of_code->SetCodePtr(segment.begin);
         return retired;
     }
@@ -587,14 +469,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         owned_fast_dispatch_table;
     std::unique_ptr<BlockOfCode> block_of_code;
     std::unique_ptr<A32EmitX64> emitter;
-    mutable std::vector<CodeSegment> code_segments;
     Optimization::PolyfillOptions polyfill_options{};
     std::size_t code_cache_size{};
-    u8* code_segments_begin{};
-    std::size_t regular_segment_bytes{};
-    std::size_t current_segment{};
-    std::size_t live_allocated_code_bytes{};
-    mutable std::uint64_t segment_touch_clock{};
     std::uint64_t segment_recycles{};
     std::uint64_t recycled_descriptors{};
     std::uint64_t recycled_code_bytes{};
