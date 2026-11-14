@@ -21,7 +21,7 @@ ifeq ($(ONLY_64BIT),0)
 endif
 
 ifeq ($(BIT),64)
-	TARGET += jmp64 address64 apx
+	TARGET += jmp64 address64 apx forward_reference
 endif
 
 all: $(TARGET)
@@ -39,6 +39,8 @@ jmp: jmp.cpp $(XBYAK_INC)
 	$(CXX) $(CFLAGS) jmp.cpp -o $@ -m32
 jmp64: jmp.cpp $(XBYAK_INC)
 	$(CXX) $(CFLAGS) jmp.cpp -o $@ -m64
+forward_reference: forward_reference.cpp $(XBYAK_INC)
+	$(CXX) $(CFLAGS) forward_reference.cpp -o $@
 address: address.cpp $(XBYAK_INC)
 	$(CXX) $(CFLAGS) address.cpp -o $@ -m32
 address64: address.cpp $(XBYAK_INC)
@@ -80,6 +82,7 @@ ifneq ($(X32),1)
 	CXX=$(CXX) ./test_nm.sh Y64
 endif
 	./jmp64
+	./forward_reference forward_reference.bytes
 	./apx
 endif
 
@@ -112,7 +115,7 @@ test: detect_x32
 	$(MAKE) test_avx512
 
 clean:
-	$(RM) a.asm *.lst *.obj *.o $(TARGET) lib_run nm.cpp nm_frame make_512
+	$(RM) a.asm *.lst *.obj *.o $(TARGET) lib_run nm.cpp nm_frame make_512 forward_reference.bytes
 
 lib_run: lib_test.cpp lib_run.cpp lib.h
 	$(CXX) $(CFLAGS) lib_run.cpp lib_test.cpp -o lib_run

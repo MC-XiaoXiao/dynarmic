@@ -19,6 +19,7 @@
 #include <string>
 #include <algorithm>
 #ifdef XBYAK_USE_TSL_LABEL_TABLES
+#include <vector>
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 #endif
@@ -1477,11 +1478,103 @@ class LabelManager {
 	typedef tsl::robin_map<int, ClabelVal> ClabelDefList;
 	// Label pointers are aligned; prime growth avoids clustering their low bits.
 	typedef tsl::robin_pg_set<Label*> LabelPtrList;
+	// Forward references are short-lived and usually resolved within one
+	// emitted block. Keep their records in reusable slots rather than allocating
+	// an unordered_multimap node for every branch. Heads retain all references
+	// for the same label; resolving one never discards its other patch sites.
+	class ClabelUndefList {
+	public:
+		typedef std::pair<int, JmpLabel> value_type;
+	private:
+		static size_t npos() { return size_t(-1); }
+		struct Slot {
+			value_type value;
+			size_t next;
+			bool active;
+			explicit Slot(const value_type& v) : value(v), next(npos()), active(false) {}
+		};
+		typedef tsl::robin_map<int, size_t> Heads;
+		std::vector<Slot> slots_;
+		Heads heads_;
+		size_t free_ = npos();
+		size_t size_ = 0;
+	public:
+		class const_iterator {
+			friend class ClabelUndefList;
+			const ClabelUndefList *owner_;
+			size_t index_;
+			void advance() {
+				while (index_ != npos() && index_ < owner_->slots_.size() && !owner_->slots_[index_].active) ++index_;
+				if (index_ == owner_->slots_.size()) index_ = npos();
+			}
+			const_iterator(const ClabelUndefList *owner, size_t index) : owner_(owner), index_(index) { advance(); }
+		public:
+			const value_type *operator->() const { assert(index_ != npos()); return &owner_->slots_[index_].value; }
+			const value_type& operator*() const { return *operator->(); }
+			const_iterator& operator++() { assert(index_ != npos()); ++index_; advance(); return *this; }
+			bool operator==(const const_iterator& rhs) const { return owner_ == rhs.owner_ && index_ == rhs.index_; }
+			bool operator!=(const const_iterator& rhs) const { return !(*this == rhs); }
+		};
+		typedef const_iterator iterator;
+		bool empty() const { return size_ == 0; }
+		const_iterator begin() const { return const_iterator(this, empty() ? npos() : 0); }
+		const_iterator end() const { return const_iterator(this, npos()); }
+		const_iterator find(int label) const {
+			Heads::const_iterator head = heads_.find(label);
+			return const_iterator(this, head == heads_.end() ? npos() : head.value());
+		}
+		void insert(const value_type& value) {
+			const bool appended = free_ == npos();
+			const size_t index = appended ? slots_.size() : free_;
+			if (appended) slots_.push_back(Slot(value));
+			// A head-table allocation can fail after slot growth. Roll back the
+			// unlinked slot without requiring exception support in the header.
+			struct Rollback {
+				std::vector<Slot>& slots;
+				bool appended;
+				~Rollback() { if (appended) slots.pop_back(); }
+			} rollback = { slots_, appended };
+			std::pair<Heads::iterator, bool> head = heads_.try_emplace(value.first, npos());
+			Slot& slot = slots_[index];
+			if (!appended) free_ = slot.next;
+			slot.value = value;
+			slot.next = head.first.value();
+			slot.active = true;
+			head.first.value() = index;
+			++size_;
+			rollback.appended = false;
+		}
+		void erase(const_iterator position) {
+			assert(position.owner_ == this && position.index_ != npos());
+			const size_t index = position.index_;
+			Slot& slot = slots_[index];
+			Heads::iterator head = heads_.find(slot.value.first);
+			assert(head != heads_.end());
+			if (head.value() == index) {
+				head.value() = slot.next;
+			} else {
+				size_t previous = head.value();
+				while (slots_[previous].next != index) previous = slots_[previous].next;
+				slots_[previous].next = slot.next;
+			}
+			if (head.value() == npos()) heads_.erase(head);
+			slot.active = false;
+			slot.next = free_;
+			free_ = index;
+			--size_;
+		}
+		void clear() {
+			std::vector<Slot>().swap(slots_);
+			Heads().swap(heads_);
+			free_ = npos();
+			size_ = 0;
+		}
+	};
 #else
 	typedef XBYAK_STD_UNORDERED_MAP<int, ClabelVal> ClabelDefList;
 	typedef XBYAK_STD_UNORDERED_SET<Label*> LabelPtrList;
-#endif
 	typedef XBYAK_STD_UNORDERED_MULTIMAP<int, const JmpLabel> ClabelUndefList;
+#endif
 
 	CodeArray *base_;
 	// global : stateList_.front(), local : stateList_.back()
