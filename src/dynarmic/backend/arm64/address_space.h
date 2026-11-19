@@ -8,10 +8,10 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
-#include <boost/container/small_vector.hpp>
 #include <mcl/hash/xmrx.hpp>
 #include <mcl/stdint.hpp>
 #include <oaknut/code_block.hpp>
@@ -127,9 +127,11 @@ protected:
     // Retirement releases only that segment's packed metadata.
     std::vector<CodeIndex> code_indexes{1};
     const CodeIndex* FindCodeIndex(CodePtr address) const;
+    static constexpr u32 invalid_block_reference = ~u32{};
     struct BlockReference {
         CodePtr entry_point;
         std::span<const BlockRelocation> relocations;
+        u32 next;
     };
     struct DescriptorHash {
         size_t operator()(IR::LocationDescriptor descriptor) const noexcept {
@@ -138,9 +140,12 @@ protected:
     };
     // Relocation buffers are immutable and owned by block_infos (or its shared
     // templates) until ClearCache, including sources invalidated in between.
-    // Moving the metadata index preserves these separately allocated buffers.
-    // Index them directly so patching does not search both source indexes again.
-    tsl::robin_map<IR::LocationDescriptor, boost::container::small_vector<BlockReference, 1>, DescriptorHash> block_references;
+    // Each reference covers at least one instruction in the code cache, so
+    // the 128 MiB maximum leaves room for all slots in a 32-bit index. Keep
+    // the hash buckets compact and reuse slots released by segment retirement.
+    tsl::robin_map<IR::LocationDescriptor, u32, DescriptorHash> block_reference_heads;
+    std::vector<BlockReference> block_references;
+    u32 free_block_reference = invalid_block_reference;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

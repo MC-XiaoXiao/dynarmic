@@ -31,7 +31,7 @@ AddressSpace::AddressSpace(size_t code_cache_size)
         , fastmem_manager(exception_handler) {
     // Mixed descriptor bits keep this large metadata index compact without
     // clustering aligned guest addresses in the power-of-two bucket table.
-    block_references.max_load_factor(0.8f);
+    block_reference_heads.max_load_factor(0.8f);
     ASSERT_MSG(code_cache_size <= 128 * 1024 * 1024, "code_cache_size > 128 MiB not currently supported");
 
     exception_handler.Register(mem, code_cache_size);
@@ -161,7 +161,9 @@ void AddressSpace::ClearCache() {
     for (auto& index : code_indexes)
         index = {};
     reset_code_segments();
-    block_references.clear();
+    block_reference_heads.clear();
+    std::vector<BlockReference>{}.swap(block_references);
+    free_block_reference = invalid_block_reference;
     code.set_offset(prelude_info.end_of_prelude);
     if (!code_segments.empty())
         ResetColdCodeLayout();
@@ -211,14 +213,21 @@ void AddressSpace::RetireCodeIndex(
     const auto& retired = code_segments[segment];
     // Remove sources before destroying their immutable relocation buffers.
     // Incoming references from surviving segments remain available for relinking.
-    for (auto it = block_references.begin(); it != block_references.end();) {
-        auto& references = it.value();
-        references.erase(std::remove_if(references.begin(), references.end(),
-            [&](const BlockReference& source) {
-                return source.entry_point >= retired.begin && source.entry_point < retired.end;
-            }), references.end());
-        if (references.empty())
-            it = block_references.erase(it);
+    for (auto it = block_reference_heads.begin(); it != block_reference_heads.end();) {
+        auto* link = &it.value();
+        while (*link != invalid_block_reference) {
+            auto& source = block_references[*link];
+            if (source.entry_point >= retired.begin && source.entry_point < retired.end) {
+                const auto index = *link;
+                *link = source.next;
+                source.next = free_block_reference;
+                free_block_reference = index;
+            } else {
+                link = &source.next;
+            }
+        }
+        if (it.value() == invalid_block_reference)
+            it = block_reference_heads.erase(it);
         else
             ++it;
     }
@@ -483,7 +492,17 @@ void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relo
     }
 
     for (const auto& [target_descriptor, list] : block_info.BlockRelocations()) {
-        block_references[target_descriptor].push_back({block_info.entry_point, list});
+        auto& head = block_reference_heads.try_emplace(target_descriptor, invalid_block_reference).first.value();
+        if (free_block_reference == invalid_block_reference) {
+            const auto index = static_cast<u32>(block_references.size());
+            block_references.push_back({block_info.entry_point, list, head});
+            head = index;
+        } else {
+            const auto index = free_block_reference;
+            free_block_reference = block_references[index].next;
+            block_references[index] = {block_info.entry_point, list, head};
+            head = index;
+        }
         LinkBlockLinks(block_info.entry_point, Get(target_descriptor), list);
     }
 }
@@ -541,14 +560,15 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
     // ADRL is a multi-instruction update and still requires quiescence.
     if (!target_ptr)
         return;
-    const auto references = block_references.find(target_descriptor);
-    if (references == block_references.end())
+    const auto head = block_reference_heads.find(target_descriptor);
+    if (head == block_reference_heads.end())
         return;
-    for (const auto& [source, relocations] : references->second) {
-        for (const auto [offset, type] : relocations) {
+    for (auto index = head->second; index != invalid_block_reference; index = block_references[index].next) {
+        const auto& reference = block_references[index];
+        for (const auto [offset, type] : reference.relocations) {
             if (type != BlockRelocationType::Branch)
                 continue;
-            PublishBranch(source + offset, target_ptr);
+            PublishBranch(reference.entry_point + offset, target_ptr);
         }
     }
 #else
@@ -571,11 +591,12 @@ void AddressSpace::PublishBranch(CodePtr patch, CodePtr target) {
 }
 
 void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor, CodePtr target_ptr) {
-    const auto references = block_references.find(target_descriptor);
-    if (references == block_references.end())
+    const auto head = block_reference_heads.find(target_descriptor);
+    if (head == block_reference_heads.end())
         return;
-    for (const auto& [source, relocations] : references->second) {
-        LinkBlockLinks<true>(source, target_ptr, relocations);
+    for (auto index = head->second; index != invalid_block_reference; index = block_references[index].next) {
+        const auto& reference = block_references[index];
+        LinkBlockLinks<true>(reference.entry_point, target_ptr, reference.relocations);
     }
 }
 
