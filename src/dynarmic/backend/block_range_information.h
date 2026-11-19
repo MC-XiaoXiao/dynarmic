@@ -138,16 +138,24 @@ private:
                 RotateLeft(node);
             }
         }
-        static void Insert(Link& node, Link& prepared) {
+        static bool Insert(Link& node, Link& prepared) {
             if (!node) {
                 node = std::move(prepared);
-                return;
+                return true;
             }
-            const auto order = Compare(prepared->lower, prepared->upper, prepared->location, *node);
-            if (order < 0) Insert(node->left, prepared);
-            else if (order > 0) Insert(node->right, prepared);
-            else return;
+            const auto upper = prepared->upper;
+            const auto order = Compare(prepared->lower, upper, prepared->location, *node);
+            if (order == 0)
+                return false;
+            if (!Insert(order < 0 ? node->left : node->right, prepared)) {
+                // Insertion can raise the maximum without increasing the
+                // child's height. The current subtree then stays balanced.
+                node->maximum = std::max(node->maximum, upper);
+                return false;
+            }
+            const auto height = node->height;
             Balance(node);
+            return node->height != height;
         }
         static void Erase(Link& node, ProgramCounterType first, ProgramCounterType last,
                           IR::LocationDescriptor descriptor) {
