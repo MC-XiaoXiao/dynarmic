@@ -43,7 +43,7 @@ public:
         bool active{};
     };
 
-    enum class GenerationTransitionKind { RecycleSegment, ClearAll };
+    enum class GenerationTransitionKind { RecycleSegment, ReclaimColdSegment, ClearAll };
 
     mutable std::recursive_mutex mutex;
     mutable std::condition_variable_any generation_changed;

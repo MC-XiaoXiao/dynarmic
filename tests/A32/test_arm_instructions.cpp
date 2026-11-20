@@ -5,6 +5,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#if defined(__linux__) && defined(__x86_64__)
+#    include <atomic>
+#    include <cstdint>
+#    include <sys/mman.h>
+#    include <unistd.h>
+#endif
+
 #include "./testenv.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
@@ -17,6 +24,104 @@ static A32::UserConfig GetUserConfig(ArmTestEnv* testenv) {
     user_config.callbacks = testenv;
     return user_config;
 }
+
+#if defined(__linux__) && defined(__x86_64__)
+TEST_CASE("arm: Retired native segments release only dead code pages", "[arm][A32]") {
+    constexpr u32 blocks_per_segment = 128;
+    constexpr u32 instructions_per_block = 2;
+    constexpr u32 bytes_per_block = instructions_per_block * sizeof(u32);
+    constexpr u32 second_segment_pc = blocks_per_segment * bytes_per_block;
+    ArmTestEnv test_env;
+    for (u32 i = 0; i < 2 * blocks_per_segment; ++i) {
+        test_env.code_mem.push_back(0xe2800001);  // add r0, r0, #1
+        test_env.code_mem.push_back(0xeafffffe);  // b .
+    }
+
+    std::atomic<u64> callbacks{reinterpret_cast<u64>(&test_env)};
+    std::atomic<u64> lookup{}, runtime_config{}, fast_dispatch{};
+    std::atomic<u64> exclusive_lock{}, exclusive_addresses{}, exclusive_values{};
+    A32::NativeCodeSlab slab;
+    A32::UserConfig config{&test_env};
+    config.code_cache_size = 64 * 1024 * 1024;
+    config.native_code_slab = &slab;
+    config.callbacks_link = &callbacks;
+    config.lookup_link = &lookup;
+    config.runtime_config_link = &runtime_config;
+    config.fast_dispatch_table_link = &fast_dispatch;
+    config.coprocessor_user_arg_link = &callbacks;
+    config.exclusive_monitor_lock_link = &exclusive_lock;
+    config.exclusive_monitor_addresses_link = &exclusive_addresses;
+    config.exclusive_monitor_values_link = &exclusive_values;
+    A32::Jit jit{config};
+
+    const auto system_page_size = sysconf(_SC_PAGESIZE);
+    REQUIRE(system_page_size > 0);
+    const auto page_size = static_cast<size_t>(system_page_size);
+    constexpr u32 user_cpsr = 0x1d0;
+    const auto descriptor = [](u32 pc) {
+        return A32::LocationDescriptor{pc, A32::PSR{user_cpsr}, A32::FPSCR{0}}.UniqueHash();
+    };
+    const auto compile_segment = [&](u32 first_pc) {
+        for (u32 i = 0; i < blocks_per_segment; ++i) {
+            REQUIRE(jit.Precompile(descriptor(first_pc + i * bytes_per_block)));
+        }
+        const auto generation = slab.generation();
+        A32::NativeCodeSlab::BlockDescriptor first, last;
+        REQUIRE(slab.find_block(descriptor(first_pc), generation, first));
+        REQUIRE(slab.find_block(descriptor(first_pc + (blocks_per_segment - 1) * bytes_per_block), generation, last));
+        const auto first_address = reinterpret_cast<std::uintptr_t>(first.entrypoint);
+        const auto page = (first_address / page_size + 1) * page_size;
+        REQUIRE(page + page_size <= reinterpret_cast<std::uintptr_t>(last.entrypoint));
+        return reinterpret_cast<void*>(page);
+    };
+    const auto resident = [&](void* page) {
+        unsigned char flags = 0;
+        REQUIRE(mincore(page, page_size, &flags) == 0);
+        return (flags & 1) != 0;
+    };
+    const auto run = [&](u32 pc) {
+        jit.SetCpsr(user_cpsr);
+        jit.Regs()[15] = pc;
+        jit.Regs()[0] = 0;
+        test_env.ticks_left = 2;
+        jit.Run();
+        REQUIRE(jit.Regs()[0] == 1);
+    };
+
+    auto* const first_page = compile_segment(0);
+    REQUIRE(resident(first_page));
+    REQUIRE(slab.reclaimable_cold_segment_bytes() == 0);
+    slab.recycle_cache();  // The second segment is empty.
+    REQUIRE(resident(first_page));
+    auto* const second_page = compile_segment(second_segment_pc);
+    REQUIRE(resident(second_page));
+
+    const auto reclaimable = slab.reclaimable_cold_segment_bytes();
+    const auto current_space = slab.space_remaining();
+    REQUIRE(reclaimable != 0);
+    REQUIRE(slab.reclaim_cold_segment() == reclaimable);
+    REQUIRE(slab.space_remaining() == current_space);
+    REQUIRE(slab.reclaim_cold_segment() == 0);
+    REQUIRE_FALSE(resident(first_page));
+    REQUIRE(resident(second_page));
+    REQUIRE_FALSE(jit.LookupCodeCache(descriptor(0)).present);
+    REQUIRE(jit.LookupCodeCache(descriptor(second_segment_pc)).present);
+    run(second_segment_pc);
+
+    slab.recycle_cache();  // Reuse the first segment without evicting the second.
+    REQUIRE(resident(second_page));
+    run(0);
+    slab.recycle_cache();  // Retire the previously occupied second segment.
+    REQUIRE_FALSE(resident(second_page));
+    run(0);
+
+    auto* const recompiled_page = compile_segment(second_segment_pc);
+    slab.clear_cache();
+    REQUIRE_FALSE(resident(recompiled_page));
+    REQUIRE_FALSE(jit.LookupCodeCache(descriptor(second_segment_pc)).present);
+    run(second_segment_pc);
+}
+#endif
 
 TEST_CASE("arm: Opt Failure: Const folding in MostSignificantWord", "[arm][A32]") {
     // This was a randomized test-case that was failing.

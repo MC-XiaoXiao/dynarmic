@@ -95,6 +95,17 @@ public:
         MemoryWrite32(vaddr + 4, static_cast<u32>(value >> 32));
     }
 
+    std::uint8_t MemorySwap8(u32 vaddr, std::uint8_t value) override {
+        const auto previous = MemoryRead8(vaddr);
+        MemoryWrite8(vaddr, value);
+        return previous;
+    }
+    std::uint32_t MemorySwap32(u32 vaddr, std::uint32_t value) override {
+        const auto previous = MemoryRead32(vaddr);
+        MemoryWrite32(vaddr, value);
+        return previous;
+    }
+
     void InterpreterFallback(u32 pc, size_t num_instructions) override { ASSERT_MSG(false, "InterpreterFallback({:08x}, {}) code = {:08x}", pc, num_instructions, *MemoryReadCode(pc)); }
 
     void CallSVC(std::uint32_t swi) override { ASSERT_MSG(false, "CallSVC({})", swi); }
@@ -163,6 +174,17 @@ public:
     }
     void MemoryWrite64(std::uint32_t vaddr, std::uint64_t value) override {
         write(vaddr, value);
+    }
+
+    std::uint8_t MemorySwap8(std::uint32_t vaddr, std::uint8_t value) override {
+        const auto previous = MemoryRead8(vaddr);
+        MemoryWrite8(vaddr, value);
+        return previous;
+    }
+    std::uint32_t MemorySwap32(std::uint32_t vaddr, std::uint32_t value) override {
+        const auto previous = MemoryRead32(vaddr);
+        MemoryWrite32(vaddr, value);
+        return previous;
     }
 
     bool MemoryWriteExclusive8(std::uint32_t vaddr, std::uint8_t value, [[maybe_unused]] std::uint8_t expected) override {

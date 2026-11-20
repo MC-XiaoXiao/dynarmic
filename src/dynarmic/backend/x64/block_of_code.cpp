@@ -11,6 +11,9 @@
 #else
 #    include <sys/mman.h>
 #endif
+#ifdef __linux__
+#    include <unistd.h>
+#endif
 
 #ifdef __APPLE__
 #    include <errno.h>
@@ -262,6 +265,30 @@ void BlockOfCode::DisableWriting() {
 void BlockOfCode::ClearCache() {
     ASSERT(prelude_complete);
     SetCodePtr(code_begin);
+}
+
+void BlockOfCode::DiscardCodePages(CodePtr begin, CodePtr end) noexcept {
+#ifdef __linux__
+    ASSERT(prelude_complete);
+    ASSERT(reinterpret_cast<const u8*>(begin) >= code_begin);
+    static const auto system_page_size = sysconf(_SC_PAGESIZE);
+    if (system_page_size <= 0) {
+        return;
+    }
+    const auto page_size = static_cast<size_t>(system_page_size);
+    const auto page_mask = page_size - 1;
+    const auto first_page = (reinterpret_cast<std::uintptr_t>(begin) + page_mask) & ~page_mask;
+    const auto end_page = reinterpret_cast<std::uintptr_t>(end) & ~page_mask;
+    if (first_page < end_page) {
+        // The anonymous mapping has no live entry points here. Retain the
+        // address and write/execute protection for the next emitter pass.
+        static_cast<void>(madvise(reinterpret_cast<void*>(first_page), end_page - first_page,
+                                  MADV_DONTNEED));
+    }
+#else
+    static_cast<void>(begin);
+    static_cast<void>(end);
+#endif
 }
 
 size_t BlockOfCode::SpaceRemaining() const {
@@ -555,6 +582,12 @@ size_t BlockOfCode::GetTotalCodeSize() const {
 }
 
 void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
+    void* ret = ReserveCodeSpace(alloc_size);
+    memset(ret, 0, alloc_size);
+    return ret;
+}
+
+void* BlockOfCode::ReserveCodeSpace(size_t alloc_size) {
     if (size_ + alloc_size >= maxSize_) {
         throw Xbyak::Error(Xbyak::ERR_CODE_IS_TOO_BIG);
     }
@@ -563,7 +596,6 @@ void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
 
     void* ret = getCurr<void*>();
     size_ += alloc_size;
-    memset(ret, 0, alloc_size);
     return ret;
 }
 

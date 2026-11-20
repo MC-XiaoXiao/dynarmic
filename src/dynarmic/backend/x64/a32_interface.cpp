@@ -137,20 +137,52 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
         return NativeCodeSegments<u8>::active_segment_space_remaining(block_of_code->getCurr<const u8*>());
     }
 
-    [[nodiscard]] A32EmitX64::RetiredCodeStats recycle_code_segment() {
-        const auto victim = select_recycle_segment();
+    [[nodiscard]] A32EmitX64::RetiredCodeStats retire_code_segment(std::size_t victim) {
         auto& segment = code_segments[victim];
         // An unused segment has never published code or source patch sites.
         // Reaching it for the first time needs no emitter-wide retirement pass.
         const auto retired = segment.initialized
                                  ? emitter->RetireCodeRange(segment.begin, segment.end, victim)
                                  : A32EmitX64::RetiredCodeStats{};
+        if (segment.used_bytes != 0) {
+            block_of_code->DiscardCodePages(segment.begin, segment.begin + segment.used_bytes);
+        }
         recycled_descriptors += retired.descriptors;
         recycled_code_bytes += retired.code_bytes;
         ++segment_recycles;
-        activate_code_segment(victim);
-        block_of_code->SetCodePtr(segment.begin);
         return retired;
+    }
+
+    [[nodiscard]] std::optional<std::size_t> occupied_cold_segment() const {
+        std::optional<std::size_t> victim;
+        for (std::size_t index = 0; index < code_segments.size(); ++index) {
+            const auto& segment = code_segments[index];
+            if (index != current_segment && segment.used_bytes != 0U &&
+                (!victim || segment.last_touch < code_segments[*victim].last_touch)) {
+                victim = index;
+            }
+        }
+        return victim;
+    }
+
+    [[nodiscard]] std::size_t reclaimable_cold_segment_bytes() const {
+#ifdef __linux__
+        const std::lock_guard lock{mutex};
+        if (active_executions != 0U || clear_pending || !pending_ranges.empty())
+            return 0U;
+        const auto victim = occupied_cold_segment();
+        return victim ? code_segments[*victim].used_bytes : 0U;
+#else
+        return 0U;
+#endif
+    }
+
+    [[nodiscard]] std::size_t reclaim_cold_segment() {
+        const std::lock_guard lock{mutex};
+        const auto bytes = reclaimable_cold_segment_bytes();
+        if (bytes != 0U)
+            request_generation_transition(GenerationTransitionKind::ReclaimColdSegment);
+        return bytes;
     }
 
     void initialize(A32::UserConfig config, A32::Jit* jit_interface, void* jit_state, const void* (*lookup)(void*), void* lookup_arg, bool shared) {
@@ -353,6 +385,11 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
             if (pending_transition == GenerationTransitionKind::ClearAll) {
                 clear_executor_fast_dispatch_tables();
                 emitter->ClearCache();
+                for (const auto& segment : code_segments) {
+                    if (segment.used_bytes != 0) {
+                        block_of_code->DiscardCodePages(segment.begin, segment.begin + segment.used_bytes);
+                    }
+                }
                 block_of_code->ClearCache();
                 reset_code_segments();
                 pending_direct_link_targets.clear();
@@ -365,7 +402,18 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
                     const auto locations = emitter->InvalidateCacheRanges(pending_ranges);
                     clear_executor_range_state(locations);
                 }
-                const auto retired = recycle_code_segment();
+                A32EmitX64::RetiredCodeStats retired;
+                if (pending_transition == GenerationTransitionKind::ReclaimColdSegment) {
+                    const auto victim = occupied_cold_segment();
+                    ASSERT(victim.has_value());
+                    retired = retire_code_segment(*victim);
+                    release_code_segment(*victim);
+                } else {
+                    const auto victim = select_recycle_segment();
+                    retired = retire_code_segment(victim);
+                    activate_code_segment(victim);
+                    block_of_code->SetCodePtr(code_segments[victim].begin);
+                }
                 // Advancing into an unused segment does not retire a native
                 // pointer and therefore is not a cache generation change.
                 // This lets bounded profile publication span the initially

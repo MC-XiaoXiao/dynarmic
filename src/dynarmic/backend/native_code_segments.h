@@ -118,12 +118,19 @@ protected:
     }
 
     void activate_code_segment(std::size_t index) {
+        release_code_segment(index);
         auto& segment = code_segments[index];
-        live_allocated_code_bytes -= segment.used_bytes;
         segment.initialized = true;
         segment.last_touch = ++segment_touch_clock;
-        segment.used_bytes = 0U;
         current_segment = index;
+    }
+
+    void release_code_segment(std::size_t index) {
+        auto& segment = code_segments[index];
+        live_allocated_code_bytes -= segment.used_bytes;
+        segment.initialized = false;
+        segment.last_touch = 0U;
+        segment.used_bytes = 0U;
     }
 
     mutable std::vector<CodeSegment> code_segments;

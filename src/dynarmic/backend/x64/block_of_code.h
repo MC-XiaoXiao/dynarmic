@@ -53,6 +53,8 @@ public:
 
     /// Clears this block of code and resets code pointer to beginning.
     void ClearCache();
+    /// Discard only whole host pages within a retired guest code range.
+    void DiscardCodePages(CodePtr begin, CodePtr end) noexcept;
     /// Calculates how much space is remaining to use.
     size_t SpaceRemaining() const;
     /// Ensure at least codesize bytes of code cache memory are committed at the current code_ptr.
@@ -156,6 +158,8 @@ public:
     /// This is useful for objects that need to be placed close to or within code.
     /// The lifetime of this memory is the same as the code around it.
     void* AllocateFromCodeSpace(size_t size);
+    /// Reserve code space without touching pages. Initialize it before use.
+    void* ReserveCodeSpace(size_t size);
 
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);

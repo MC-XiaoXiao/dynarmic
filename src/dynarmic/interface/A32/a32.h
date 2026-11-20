@@ -118,6 +118,10 @@ public:
     // by all other segments. Like clear_cache(), publication occurs only at a
     // boundary where no registered executor is active.
     void recycle_cache();
+    // Pressure reclamation leaves the current emission segment intact.
+    // Unsupported backends and slabs without a quiescent occupied victim return zero.
+    [[nodiscard]] std::size_t reclaimable_cold_segment_bytes() const;
+    [[nodiscard]] std::size_t reclaim_cold_segment();
     void invalidate_cache_range(std::uint32_t start_address,
                                 std::size_t length);
     void request_cache_clear();

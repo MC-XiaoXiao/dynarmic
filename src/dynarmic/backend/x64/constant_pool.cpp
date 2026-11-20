@@ -5,7 +5,7 @@
 
 #include "dynarmic/backend/x64/constant_pool.h"
 
-#include <cstring>
+#include <memory>
 
 #include <mcl/assert.hpp>
 
@@ -19,7 +19,7 @@ ConstantPool::ConstantPool(BlockOfCode& code, size_t size)
     code.int3();
     code.align(align_size);
     pool = std::span<ConstantT>(
-        reinterpret_cast<ConstantT*>(code.AllocateFromCodeSpace(size)), size / align_size);
+        reinterpret_cast<ConstantT*>(code.ReserveCodeSpace(size)), size / align_size);
 }
 
 Xbyak::Address ConstantPool::GetConstant(const Xbyak::AddressFrame& frame, u64 lower, u64 upper) {
@@ -34,9 +34,8 @@ std::optional<const void*> ConstantPool::Intern(u64 lower, u64 upper) {
     if (iter == constant_info.end()) {
         if (insertion_point == pool.size())
             return std::nullopt;
-        ConstantT& target_constant = pool[insertion_point];
-        target_constant = constant;
-        iter = constant_info.insert({constant, &target_constant}).first;
+        auto* const target_constant = std::construct_at(pool.data() + insertion_point, constant);
+        iter = constant_info.insert({constant, target_constant}).first;
         ++insertion_point;
     }
     return iter->second;

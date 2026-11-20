@@ -61,6 +61,14 @@ void NativeCodeSlab::recycle_cache() {
     impl->recycle_cache();
 }
 
+std::size_t NativeCodeSlab::reclaimable_cold_segment_bytes() const {
+    return impl->reclaimable_cold_segment_bytes();
+}
+
+std::size_t NativeCodeSlab::reclaim_cold_segment() {
+    return impl->reclaim_cold_segment();
+}
+
 void NativeCodeSlab::invalidate_cache_range(
     std::uint32_t start_address, std::size_t length) {
     impl->invalidate_cache_range(start_address, length);

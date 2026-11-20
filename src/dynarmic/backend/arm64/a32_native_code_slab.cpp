@@ -160,6 +160,8 @@ struct NativeCodeSlab::Impl : Backend::NativeCodeSlabLifetime<Impl, A32JitState,
     // Oaknut reserves the executable mapping at construction and commits it
     // through normal page faults as emission writes it.
     void ensure_memory_committed(size_t) {}
+    size_t reclaimable_cold_segment_bytes() const { return 0U; }
+    size_t reclaim_cold_segment() { return 0U; }
 
     void halt_executor(A32JitState& state) {
         Atomic::Or(state.halt_reason, static_cast<u32>(HaltReason::CacheInvalidation));
